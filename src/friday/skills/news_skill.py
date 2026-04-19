@@ -4,7 +4,7 @@ import logging
 import httpx
 import xml.etree.ElementTree as ET
 from typing import Dict, Any, List
-from src.friday.skills.base import BaseSkill, SkillResult
+from friday.skills.base import BaseSkill, SkillResult
 
 logger = logging.getLogger(__name__)
 

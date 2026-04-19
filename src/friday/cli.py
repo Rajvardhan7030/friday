@@ -8,16 +8,16 @@ from rich.console import Console
 from rich.table import Table
 from typing import Optional
 
-from src.friday.core.config import FridaySettings, DEFAULT_CONFIG_DIR
-from src.friday.core.hardware import get_hardware_profile
-from src.friday.core.agent_runner import AgentRunner
-from src.friday.core.registry import SkillRegistry
-from src.friday.llm.local import LocalEngine
-from src.friday.memory.vector_store import VectorStore
-from src.friday.memory.document_indexer import DocumentIndexer
-from src.friday.memory.conversation import ConversationMemory
-from src.friday.voice.tts import TTSEngine
-from src.friday.utils.logging import setup_logging
+from friday.core.config import FridaySettings, DEFAULT_CONFIG_DIR
+from friday.core.hardware import get_hardware_profile
+from friday.core.agent_runner import AgentRunner
+from friday.core.registry import SkillRegistry
+from friday.llm.local import LocalEngine
+from friday.memory.vector_store import VectorStore
+from friday.memory.document_indexer import DocumentIndexer
+from friday.memory.conversation import ConversationMemory
+from friday.voice.tts import TTSEngine
+from friday.utils.logging import setup_logging
 
 app = typer.Typer(help="FRIDAY: Your local-first, privacy-centric AI assistant.")
 console = Console()
@@ -79,15 +79,15 @@ def ask(
         
         # Register specialized agents
         if mode == "research":
-            from src.friday.agents.research import ResearchAgent
+            from friday.agents.research import ResearchAgent
             runner.register_agent(ResearchAgent(llm, vector_store))
         elif mode == "code":
-            from src.friday.agents.code_assistant import CodeAssistantAgent
+            from friday.agents.code_assistant import CodeAssistantAgent
             runner.register_agent(CodeAssistantAgent(llm, settings.workspace_dir))
         else:
             # Default chat agent could be a simpler one or the runner itself
             # For v0.1 we'll use a basic chat agent
-            from src.friday.agents.base import BaseAgent, Context, AgentResult
+            from friday.agents.base import BaseAgent, Context, AgentResult
             class ChatAgent(BaseAgent):
                 @property
                 def name(self): return "chat"
@@ -112,7 +112,7 @@ def digest():
         settings, llm, registry, vector_store, conv_memory, runner = get_runtime()
         tts = TTSEngine(settings.persona_voice)
         
-        from src.friday.agents.morning_digest import MorningDigestAgent
+        from friday.agents.morning_digest import MorningDigestAgent
         agent = MorningDigestAgent(llm, tts)
         
         console.print("[bold blue]Starting Morning Digest...[/bold blue]")

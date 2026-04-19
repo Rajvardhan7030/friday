@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import aiofiles
-from src.friday.memory.vector_store import VectorStore
+from friday.memory.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 

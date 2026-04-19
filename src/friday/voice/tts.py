@@ -21,13 +21,12 @@ class TTSEngine:
 
     async def speak(self, text: str) -> None:
         """Synthesize text and play it."""
+        output_file = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 output_file = f.name
 
             # Run piper as a subprocess
-            # Command: echo text | piper --model model.onnx --output_file out.wav
-            # v0.1: simple subprocess call. Requires piper binary and model to be setup.
             process = subprocess.Popen(
                 [self.piper_path, "--model", self.voice_model, "--output_file", output_file],
                 stdin=subprocess.PIPE,
@@ -36,7 +35,7 @@ class TTSEngine:
                 text=True
             )
             
-            stdout, stderr = process.communicate(input=text)
+            stdout, stderr = process.communicate(input=text, timeout=60)
             
             if process.returncode == 0 and os.path.exists(output_file):
                 # Play audio
@@ -45,10 +44,13 @@ class TTSEngine:
             else:
                 logger.error(f"TTS synthesis failed: {stderr}")
                 
-            # Cleanup
-            if os.path.exists(output_file):
-                os.remove(output_file)
-                
         except Exception as e:
             logger.error(f"TTS Engine error: {e}")
             print(f"\n{text}\n") # Fallback to printing if TTS fails
+        finally:
+            # Guarantee cleanup even on AudioSegment exceptions
+            if output_file and os.path.exists(output_file):
+                try:
+                    os.remove(output_file)
+                except Exception as e:
+                    logger.warning(f"Failed to cleanup TTS file {output_file}: {e}")

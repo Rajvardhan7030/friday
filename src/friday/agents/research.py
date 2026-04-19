@@ -3,20 +3,21 @@
 import logging
 import json
 from typing import Dict, Any, List, Optional
-from src.friday.agents.base import BaseAgent, Context, AgentResult
-from src.friday.llm.engine import LLMEngine, Message
-from src.friday.skills.web_search_skill import WebSearchSkill
-from src.friday.memory.vector_store import VectorStore
+from friday.agents.base import BaseAgent, Context, AgentResult
+from friday.llm.engine import LLMEngine, Message
+from friday.skills.web_search_skill import WebSearchSkill
+from friday.memory.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
 class ResearchAgent(BaseAgent):
     """Multi-hop research agent with citations and ReAct loop."""
 
-    def __init__(self, llm_engine: LLMEngine, vector_store: VectorStore):
+    def __init__(self, llm_engine: LLMEngine, vector_store: VectorStore, max_iterations: int = 5):
         super().__init__(llm_engine)
         self.vector_store = vector_store
         self.web_search = WebSearchSkill()
+        self.max_iterations = max_iterations
 
     @property
     def name(self) -> str:
@@ -27,16 +28,30 @@ class ResearchAgent(BaseAgent):
         return "Deep research agent that searches local memory and the web with citations."
 
     async def run(self, ctx: Context) -> AgentResult:
-        """Run the research loop."""
+        """Run the research loop with a hard iteration limit."""
         logger.info(f"Starting research on: {ctx.user_query}")
         
-        # 1. Search local memory
-        local_results = await self.vector_store.similarity_search(ctx.user_query, k=5)
+        current_step = 0
+        local_results = []
+        web_results = []
         
-        # 2. Search web
-        web_results_skill = await self.web_search.execute(ctx.user_query, {})
-        web_results = web_results_skill.data if web_results_skill.success else []
-        
+        # v0.1: simple iterative retrieval until max_iterations
+        while current_step < self.max_iterations:
+            current_step += 1
+            logger.debug(f"Research step {current_step}/{self.max_iterations}")
+            
+            # 1. Search local memory
+            step_local = await self.vector_store.similarity_search(ctx.user_query, k=3)
+            local_results.extend(step_local)
+            
+            # 2. Search web
+            web_results_skill = await self.web_search.execute(ctx.user_query, {})
+            if web_results_skill.success:
+                web_results.extend(web_results_skill.data)
+                
+            # v0.1: For now we break after first hop as multi-hop logic is still basic
+            break
+            
         # 3. Consolidate results for synthesis
         consolidated_context = self._consolidate_context(local_results, web_results)
         
@@ -58,16 +73,31 @@ class ResearchAgent(BaseAgent):
     def _consolidate_context(self, local: List[Dict], web: List[Dict]) -> str:
         """Merge local and web results into a single context string."""
         context = "--- LOCAL MEMORY ---\n"
+        # Deduplicate by source
+        seen_sources = set()
         for i, res in enumerate(local):
             source = res["metadata"].get("source", f"memory_{i}")
-            context += f"SOURCE: {source}\nCONTENT: {res['content']}\n\n"
+            if source not in seen_sources:
+                context += f"SOURCE: {source}\nCONTENT: {res['content']}\n\n"
+                seen_sources.add(source)
             
         context += "--- WEB SEARCH ---\n"
         for i, res in enumerate(web):
             source = res.get("href", f"web_{i}")
-            context += f"SOURCE: web: {source}\nCONTENT: {res.get('body', '')}\n\n"
+            if source not in seen_sources:
+                # Basic HTML sanitization for prompt safety
+                body = res.get('body', '')
+                clean_body = self._strip_html(body)
+                context += f"SOURCE: web: {source}\nCONTENT: {clean_body}\n\n"
+                seen_sources.add(source)
             
         return context
+
+    def _strip_html(self, text: str) -> str:
+        """Very basic HTML tag stripper."""
+        import re
+        clean = re.compile('<.*?>')
+        return re.sub(clean, '', text)
 
     def _build_research_prompt(self, query: str, context: str) -> str:
         """Construct prompt for research synthesis."""
@@ -76,8 +106,15 @@ class ResearchAgent(BaseAgent):
     def _extract_citations(self, local: List[Dict], web: List[Dict]) -> List[Dict[str, str]]:
         """List citations for the metadata."""
         citations = []
+        seen = set()
         for res in local:
-            citations.append({"type": "local", "source": res["metadata"].get("source", "unknown")})
+            source = res["metadata"].get("source", "unknown")
+            if source not in seen:
+                citations.append({"type": "local", "source": source})
+                seen.add(source)
         for res in web:
-            citations.append({"type": "web", "source": res.get("href", "unknown")})
+            source = res.get("href", "unknown")
+            if source not in seen:
+                citations.append({"type": "web", "source": source})
+                seen.add(source)
         return citations

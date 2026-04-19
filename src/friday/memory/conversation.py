@@ -3,10 +3,10 @@
 import logging
 from typing import List, Dict, Optional
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Text, JSON
+from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, event
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker
-from src.friday.llm.engine import Message
+from friday.llm.engine import Message
 
 Base = declarative_base()
 logger = logging.getLogger(__name__)
@@ -25,7 +25,20 @@ class ConversationMemory:
     """Manages chat history and summarization."""
 
     def __init__(self, db_path: str):
-        self.engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+        # Enforce connection pooling and WAL mode for concurrency
+        self.engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"timeout": 15.0} # Wait if locked
+        )
+        
+        # Enable Write-Ahead Logging on connection
+        @event.listens_for(self.engine.sync_engine, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.close()
+
         self.session_factory = sessionmaker(
             self.engine, class_=AsyncSession, expire_on_commit=False
         )

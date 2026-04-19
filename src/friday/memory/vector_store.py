@@ -4,7 +4,7 @@ import logging
 from typing import List, Dict, Any, Optional
 import chromadb
 from chromadb.config import Settings
-from src.friday.llm.engine import LLMEngine
+from friday.llm.engine import LLMEngine
 
 logger = logging.getLogger(__name__)
 

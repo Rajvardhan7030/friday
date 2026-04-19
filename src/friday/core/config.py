@@ -1,13 +1,14 @@
 """Configuration system with YAML and environment variable support."""
 
 import os
+import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any
 import yaml
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from platformdirs import user_config_dir
 
-DEFAULT_CONFIG_DIR = Path.home() / ".friday"
+DEFAULT_CONFIG_DIR = Path(user_config_dir("friday"))
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.yaml"
 DEFAULT_ENV_PATH = DEFAULT_CONFIG_DIR / ".env"
 
@@ -55,7 +56,7 @@ class FridaySettings(BaseSettings):
         return cls(**yaml_config)
 
     def save(self, config_path: Optional[Path] = None) -> None:
-        """Save current settings to YAML."""
+        """Save current settings to YAML atomically."""
         config_path = config_path or DEFAULT_CONFIG_PATH
         config_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -70,5 +71,13 @@ class FridaySettings(BaseSettings):
                     path_to_str(v)
         path_to_str(data)
         
-        with open(config_path, "w") as f:
-            yaml.dump(data, f, default_flow_style=False)
+        # ATOMIC WRITE: Write to temp file then replace
+        fd, temp_path = tempfile.mkstemp(dir=config_path.parent, prefix="config_", suffix=".yaml")
+        try:
+            with os.fdopen(fd, 'w') as f:
+                yaml.dump(data, f, default_flow_style=False)
+            os.replace(temp_path, config_path)
+        except Exception:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            raise

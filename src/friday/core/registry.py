@@ -1,14 +1,15 @@
 """Dynamic Skill Registry for FRIDAY."""
 
-import importlib
+import importlib.util
 import inspect
 import logging
 import pkgutil
+import sys
 from pathlib import Path
 from typing import Dict, Any, List, Type, Optional
 
-from src.friday.skills.base import BaseSkill
-from src.friday.core.exceptions import SkillError
+from friday.skills.base import BaseSkill
+from friday.core.exceptions import SkillError
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +27,15 @@ class SkillRegistry:
         self.skills[skill.name] = skill
 
     def discover_built_in(self) -> None:
-        """Discover skills from src.friday.skills package."""
-        import src.friday.skills as skills_pkg
+        """Discover skills from friday.skills package."""
+        import friday.skills as skills_pkg
         
         # Iterating over submodules in the skills package
         for _, name, is_pkg in pkgutil.iter_modules(skills_pkg.__path__):
             if is_pkg or name == "base":
                 continue
                 
-            module_name = f"src.friday.skills.{name}"
+            module_name = f"friday.skills.{name}"
             try:
                 module = importlib.import_module(module_name)
                 self._extract_skills_from_module(module)
@@ -46,18 +47,19 @@ class SkillRegistry:
         if not self.user_skills_dir or not self.user_skills_dir.exists():
             return
 
-        # Simple dynamic loading for external skills
-        import sys
-        sys.path.append(str(self.user_skills_dir))
-
         for item in self.user_skills_dir.iterdir():
             if item.is_file() and item.suffix == ".py" and item.name != "__init__.py":
-                module_name = item.stem
+                # SECURE: Load without polluting sys.path or allowing shadowing
+                module_name = f"friday.user_skills.{item.stem}"
                 try:
-                    module = importlib.import_module(module_name)
-                    self._extract_skills_from_module(module)
+                    spec = importlib.util.spec_from_file_location(module_name, item)
+                    if spec and spec.loader:
+                        module = importlib.util.module_from_spec(spec)
+                        # We don't need to add to sys.modules if we don't plan to reload/pickle
+                        spec.loader.exec_module(module)
+                        self._extract_skills_from_module(module)
                 except Exception as e:
-                    logger.error(f"Failed to load user skill module {module_name}: {e}")
+                    logger.error(f"Failed to load user skill {item.name}: {e}")
 
     def _extract_skills_from_module(self, module: Any) -> None:
         """Extract classes inheriting from BaseSkill from a module."""

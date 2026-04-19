@@ -3,6 +3,7 @@
 import psutil
 import platform
 import logging
+import subprocess
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 
@@ -44,12 +45,24 @@ def get_hardware_profile() -> HardwareProfile:
     
     if GPUtil:
         try:
+            # SECURE: Safe check if nvidia-smi responds quickly
+            if platform.system() != "Windows":
+                subprocess.run(
+                    ["nvidia-smi", "-L"], 
+                    stdout=subprocess.DEVNULL, 
+                    stderr=subprocess.DEVNULL, 
+                    timeout=2.0
+                )
+            
             gpus = GPUtil.getGPUs()
             if gpus:
                 # Take the best GPU
                 gpu = gpus[0]
+                # GPUtil memoryTotal is in MB
                 gpu_vram_gb = gpu.memoryTotal / 1024
                 gpu_name = gpu.name
+        except subprocess.TimeoutExpired:
+            logger.warning("GPU detection timed out. nvidia-smi is hanging.")
         except Exception as e:
             logger.warning(f"Failed to detect GPU: {e}")
 

@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
-from src.friday.llm.engine import LLMEngine
+from friday.llm.engine import LLMEngine
 
 class Context(BaseModel):
     """Execution context for agents."""

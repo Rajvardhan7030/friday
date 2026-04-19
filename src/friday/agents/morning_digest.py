@@ -2,12 +2,12 @@
 
 import logging
 from typing import Dict, Any, List
-from src.friday.agents.base import BaseAgent, Context, AgentResult
-from src.friday.llm.engine import LLMEngine, Message
-from src.friday.skills.email_skill import EmailSkill
-from src.friday.skills.calendar_skill import CalendarSkill
-from src.friday.skills.news_skill import NewsSkill
-from src.friday.voice.tts import TTSEngine
+from friday.agents.base import BaseAgent, Context, AgentResult
+from friday.llm.engine import LLMEngine, Message
+from friday.skills.email_skill import EmailSkill
+from friday.skills.calendar_skill import CalendarSkill
+from friday.skills.news_skill import NewsSkill
+from friday.voice.tts import TTSEngine
 
 logger = logging.getLogger(__name__)
 

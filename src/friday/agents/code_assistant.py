@@ -4,9 +4,9 @@ import logging
 import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from src.friday.agents.base import BaseAgent, Context, AgentResult
-from src.friday.llm.engine import LLMEngine, Message
-from src.friday.utils.security import run_sandboxed_code
+from friday.agents.base import BaseAgent, Context, AgentResult
+from friday.llm.engine import LLMEngine, Message
+from friday.utils.security import run_sandboxed_code
 
 logger = logging.getLogger(__name__)
 

@@ -2,10 +2,10 @@
 
 import logging
 from typing import Dict, Any, List, Optional, Type
-from src.friday.agents.base import BaseAgent, Context, AgentResult
-from src.friday.llm.engine import LLMEngine
-from src.friday.core.registry import SkillRegistry
-from src.friday.core.exceptions import AgentError
+from friday.agents.base import BaseAgent, Context, AgentResult
+from friday.llm.engine import LLMEngine
+from friday.core.registry import SkillRegistry
+from friday.core.exceptions import AgentError
 
 logger = logging.getLogger(__name__)
 

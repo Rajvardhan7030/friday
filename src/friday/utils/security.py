@@ -4,6 +4,8 @@ import os
 import subprocess
 import tempfile
 import logging
+import signal
+import sys
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 
@@ -22,34 +24,37 @@ def run_sandboxed_code(
         f.write(code)
         script_path = f.name
 
+    process = None
     try:
-        # Command for restricted execution. 
-        # v0.1: Best-effort sandbox. 
-        # Linux: Use unshare to disable network if available.
-        # macOS/Windows: Standard subprocess.
-        cmd = ["python3", script_path]
+        # Use current interpreter for consistency
+        cmd = [sys.executable, script_path]
         
         # On Linux, try to run without network
         if os.name == "posix" and subprocess.call(["which", "unshare"], stdout=subprocess.DEVNULL) == 0:
             # unshare -n: run in new network namespace with only loopback
             cmd = ["unshare", "-n"] + cmd
 
-        result = subprocess.run(
-            cmd,
-            cwd=workspace_dir,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            # Ensure agent can't break out easily (e.g., shell=False)
-            shell=False
-        )
+        # Start process with its own session/process group to ensure it can't ignore signals
+        kwargs: Dict[str, Any] = {"shell": False, "cwd": workspace_dir, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True}
+        if os.name == "posix":
+            kwargs["start_new_session"] = True
 
-        success = result.returncode == 0
-        output = result.stdout if success else result.stderr
-        return success, output
+        process = subprocess.Popen(cmd, **kwargs)
 
-    except subprocess.TimeoutExpired:
-        return False, f"Error: Code execution timed out after {timeout} seconds."
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+            success = process.returncode == 0
+            output = stdout if success else stderr
+            return success, output
+        except subprocess.TimeoutExpired:
+            # FORCE KILL the entire process group
+            if os.name == "posix":
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            else:
+                process.kill()
+            process.wait()
+            return False, f"Error: Code execution timed out after {timeout} seconds."
+
     except Exception as e:
         logger.error(f"Sandboxed execution failed: {e}")
         return False, f"Error: Execution failed: {str(e)}"
