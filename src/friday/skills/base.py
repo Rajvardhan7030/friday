@@ -13,6 +13,9 @@ class SkillResult(BaseModel):
 class BaseSkill(ABC):
     """Base class for all skills."""
 
+    # Security: By default, skills are assumed safe. User skills can be flagged as dangerous.
+    __dangerous__: bool = False
+
     @property
     @abstractmethod
     def name(self) -> str:

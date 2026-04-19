@@ -12,23 +12,34 @@ class VectorStore:
     """Wrapper around ChromaDB for local vector storage."""
 
     def __init__(self, persist_directory: str, llm_engine: LLMEngine):
-        self.client = chromadb.PersistentClient(
-            path=persist_directory,
-            settings=Settings(allow_reset=True)
-        )
+        self.persist_directory = persist_directory
         self.llm = llm_engine
-        self.collection = self.client.get_or_create_collection(
-            name="friday_memory",
-            metadata={"hnsw:space": "cosine"}
-        )
+        self.client = None
+        self.collection = None
+
+    async def initialize(self) -> None:
+        """Explicitly initialize the ChromaDB client and collection."""
+        if self.client is None:
+            self.client = chromadb.PersistentClient(
+                path=self.persist_directory,
+                settings=Settings(allow_reset=True)
+            )
+            self.collection = self.client.get_or_create_collection(
+                name="friday_memory",
+                metadata={"hnsw:space": "cosine"}
+            )
+        logger.info(f"VectorStore initialized at {self.persist_directory}")
 
     async def add_documents(
         self, 
         documents: List[str], 
-        metadatas: Optional[List[Dict[str, Any]]] = None,
+metadatas: Optional[List[Dict[str, Any]]] = None,
         ids: Optional[List[str]] = None
     ) -> None:
         """Add documents to the vector store with embeddings."""
+        if self.collection is None:
+            await self.initialize()
+
         try:
             # Generate embeddings in batch if possible, but for now one by one
             embeddings = []
@@ -52,6 +63,9 @@ class VectorStore:
         filter: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """Search for similar documents."""
+        if self.collection is None:
+            await self.initialize()
+
         try:
             query_embedding = await self.llm.embed(query)
             

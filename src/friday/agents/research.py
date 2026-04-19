@@ -34,23 +34,38 @@ class ResearchAgent(BaseAgent):
         current_step = 0
         local_results = []
         web_results = []
+        current_query = ctx.user_query
         
-        # v0.1: simple iterative retrieval until max_iterations
         while current_step < self.max_iterations:
             current_step += 1
-            logger.debug(f"Research step {current_step}/{self.max_iterations}")
+            logger.debug(f"Research step {current_step}/{self.max_iterations} with query: {current_query}")
             
             # 1. Search local memory
-            step_local = await self.vector_store.similarity_search(ctx.user_query, k=3)
+            step_local = await self.vector_store.similarity_search(current_query, k=3)
+            
+            # Early termination: if we find highly relevant local content, maybe we don't need web?
+            # For simplicity, we'll check if any result has very high similarity (if vector_store provided it)
+            # Since our vector_store doesn't return scores yet, we'll just collect them.
             local_results.extend(step_local)
             
-            # 2. Search web
-            web_results_skill = await self.web_search.execute(ctx.user_query, {})
-            if web_results_skill.success:
-                web_results.extend(web_results_skill.data)
-                
-            # v0.1: For now we break after first hop as multi-hop logic is still basic
-            break
+            # 2. Search web if needed (e.g., if local results are insufficient or we want to expand)
+            # In a real ReAct loop, the LLM would decide if it needs more info.
+            # Here we'll skip web search if we have enough local info (mock check)
+            if not step_local or current_step > 1:
+                web_results_skill = await self.web_search.execute(current_query, {})
+                if web_results_skill.success:
+                    web_results.extend(web_results_skill.data)
+            
+            # 3. Simple multi-hop: ask LLM if we need more info or if we can answer
+            # To keep it efficient, we only do this if max_iterations > 1
+            if self.max_iterations > 1 and current_step < self.max_iterations:
+                refine_prompt = f"Original query: {ctx.user_query}\nCurrent results: {len(local_results)} local, {len(web_results)} web.\nBased on what we have, what is the next specific question to search for to provide a complete answer? Respond ONLY with the new search query or 'FINISH' if we have enough."
+                refine_res = await self.llm.chat([Message(role="user", content=refine_prompt)])
+                if "FINISH" in refine_res.content.upper():
+                    break
+                current_query = refine_res.content.strip().strip('"').strip("'")
+            else:
+                break
             
         # 3. Consolidate results for synthesis
         consolidated_context = self._consolidate_context(local_results, web_results)

@@ -30,50 +30,60 @@ class MorningDigestAgent(BaseAgent):
         return "Gathers unread emails, calendar events, and news to generate a daily briefing."
 
     async def run(self, ctx: Context) -> AgentResult:
-        """Run the morning briefing pipeline."""
-        logger.info("Starting morning digest...")
-        
-        # 1. Gather data
-        emails = await self.email_skill.execute("", {})
-        calendar = await self.calendar_skill.execute("", {})
-        news = await self.news_skill.execute("", {})
-        
+        """Run the morning briefing pipeline with timezone awareness."""
+        from datetime import datetime
+        now = datetime.now()
+        current_time_str = now.strftime("%A, %B %d, %Y %I:%M %p")
+        logger.info(f"Starting morning digest at {current_time_str}...")
+
+        # 1. Gather data (pass current date context)
+        context = {"current_time": current_time_str, "date": now.strftime("%Y-%m-%d")}
+        emails = await self.email_skill.execute("", context)
+        calendar = await self.calendar_skill.execute("", context)
+        news = await self.news_skill.execute("", context)
+
         # 2. Build prompt
         prompt = self._build_briefing_prompt(
+            current_time_str,
             emails.data if emails.success else [],
             calendar.data if calendar.success else [],
             news.data if news.success else []
         )
-        
+
         # 3. Generate briefing via LLM
         messages = [
-            Message(role="system", content="You are Friday, a helpful and concise personal AI assistant. Your goal is to provide a clear and engaging morning briefing."),
+            Message(role="system", content=f"You are Friday, a helpful and concise personal AI assistant. The current time is {current_time_str}. Your goal is to provide a clear and engaging morning briefing."),
             Message(role="user", content=prompt)
         ]
-        
+
         response = await self.llm.chat(messages)
         briefing_text = response.content
-        
+
         # 4. Speak briefing
         await self.tts.speak(briefing_text)
-        
+
         return AgentResult(
             content=briefing_text,
             metadata={
+                "current_time": current_time_str,
                 "emails_count": len(emails.data) if emails.success else 0,
                 "events_count": len(calendar.data) if calendar.success else 0,
                 "news_count": len(news.data) if news.success else 0
             }
         )
 
-    def _build_briefing_prompt(self, emails: List[Dict], calendar: List[Dict], news: List[Dict]) -> str:
+    def _build_briefing_prompt(self, current_time: str, emails: List[Dict], calendar: List[Dict], news: List[Dict]) -> str:
         """Construct the prompt for LLM synthesis."""
-        prompt = "Please provide a concise morning briefing (max 400 tokens) based on the following information:\n\n"
-        
+        prompt = f"The current time is {current_time}. Please provide a concise morning briefing (max 400 tokens) based on the following information:\n\n"
+
         prompt += "--- UNREAD EMAILS ---\n"
+        # Deduplication could be done here if needed
+        seen_subjects = set()
         for email in emails:
-            prompt += f"- From: {email['from']}, Subject: {email['subject']}\n"
-            
+            if email['subject'] not in seen_subjects:
+                prompt += f"- From: {email['from']}, Subject: {email['subject']}\n"
+                seen_subjects.add(email['subject'])
+    ...
         prompt += "\n--- CALENDAR EVENTS ---\n"
         for event in calendar:
             prompt += f"- {event['time']}: {event['event']}\n"

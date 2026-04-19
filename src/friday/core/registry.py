@@ -47,17 +47,72 @@ class SkillRegistry:
         if not self.user_skills_dir or not self.user_skills_dir.exists():
             return
 
+        import ast
+        
         for item in self.user_skills_dir.iterdir():
             if item.is_file() and item.suffix == ".py" and item.name != "__init__.py":
                 # SECURE: Load without polluting sys.path or allowing shadowing
                 module_name = f"friday.user_skills.{item.stem}"
+                
                 try:
+                    # READ and AUDIT using AST before exec
+                    with open(item, 'r') as f:
+                        source_code = f.read()
+                    
+                    tree = ast.parse(source_code)
+                    
+                    # Basic AST Audit: look for dangerous patterns
+                    dangerous_calls = {"os.system", "subprocess.call", "eval", "exec", "getattr", "setattr"}
+                    dangerous_imports = {"os", "sys", "subprocess", "socket"}
+                    
+                    is_safe = True
+                    for node in ast.walk(tree):
+                        # Check for dangerous calls
+                        if isinstance(node, ast.Call):
+                            func_name = ""
+                            if isinstance(node.func, ast.Name):
+                                func_name = node.func.id
+                            elif isinstance(node.func, ast.Attribute):
+                                if isinstance(node.func.value, ast.Name):
+                                    func_name = f"{node.func.value.id}.{node.func.attr}"
+                            
+                            if func_name in dangerous_calls:
+                                logger.error(f"SECURITY: User skill {item.name} uses dangerous function '{func_name}'")
+                                is_safe = False
+                                break
+                        
+                        # Check for dangerous imports
+                        if isinstance(node, ast.Import):
+                            for alias in node.names:
+                                if alias.name in dangerous_imports:
+                                    logger.error(f"SECURITY: User skill {item.name} imports dangerous module '{alias.name}'")
+                                    is_safe = False
+                                    break
+                        
+                        if isinstance(node, ast.ImportFrom):
+                            if node.module in dangerous_imports:
+                                logger.error(f"SECURITY: User skill {item.name} imports from dangerous module '{node.module}'")
+                                is_safe = False
+                                break
+                    
+                    if not is_safe:
+                        logger.error(f"Skipping dangerous skill: {item.name}")
+                        continue
+                    
                     spec = importlib.util.spec_from_file_location(module_name, item)
                     if spec and spec.loader:
                         module = importlib.util.module_from_spec(spec)
                         # We don't need to add to sys.modules if we don't plan to reload/pickle
                         spec.loader.exec_module(module)
-                        self._extract_skills_from_module(module)
+                        
+                        # Check __dangerous__ flag if set
+                        for _, obj in inspect.getmembers(module):
+                            if inspect.isclass(obj) and issubclass(obj, BaseSkill) and obj is not BaseSkill:
+                                if getattr(obj, "__dangerous__", False):
+                                    logger.error(f"SECURITY: Skill class {obj.__name__} in {item.name} is marked as __dangerous__")
+                                    continue
+                                
+                                self._extract_skills_from_module(module)
                 except Exception as e:
                     logger.error(f"Failed to load user skill {item.name}: {e}")
 

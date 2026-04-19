@@ -47,11 +47,19 @@ def run_sandboxed_code(
             output = stdout if success else stderr
             return success, output
         except subprocess.TimeoutExpired:
-            # FORCE KILL the entire process group
-            if os.name == "posix":
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-            else:
-                process.kill()
+            # FORCE KILL the entire process tree using psutil
+            import psutil
+            try:
+                parent = psutil.Process(process.pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.kill()
+                    except:
+                        pass
+                parent.kill()
+            except psutil.NoSuchProcess:
+                pass
+            
             process.wait()
             return False, f"Error: Code execution timed out after {timeout} seconds."
 

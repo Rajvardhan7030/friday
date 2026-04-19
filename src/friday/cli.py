@@ -22,8 +22,8 @@ from friday.utils.logging import setup_logging
 app = typer.Typer(help="FRIDAY: Your local-first, privacy-centric AI assistant.")
 console = Console()
 
-def get_runtime():
-    """Initialize core runtime components."""
+async def get_runtime():
+    """Initialize core runtime components asynchronously."""
     settings = FridaySettings.load()
     setup_logging(settings.config_dir / "friday.log", level=logging.INFO)
     
@@ -35,9 +35,13 @@ def get_runtime():
     
     registry = SkillRegistry(user_skills_dir=settings.config_dir / "skills")
     registry.discover_built_in()
+    registry.discover_user_skills()
     
     vector_store = VectorStore(str(settings.memory.vector_db_path), llm)
     conv_memory = ConversationMemory(str(settings.memory.sqlite_db_path))
+    
+    await vector_store.initialize()
+    await conv_memory.initialize()
     
     runner = AgentRunner(llm, registry)
     
@@ -74,8 +78,13 @@ def ask(
 ):
     """Ask FRIDAY a question."""
     async def _ask():
-        settings, llm, registry, vector_store, conv_memory, runner = get_runtime()
-        await conv_memory.initialize()
+        # Security: Basic Prompt Injection Detection
+        injection_markers = ["ignore previous", "system prompt", "dan mode", "you are now"]
+        if any(marker in query.lower() for marker in injection_markers):
+            console.print("[bold red]Error: Potential prompt injection detected in query.[/bold red]")
+            raise typer.Exit(code=1)
+
+        settings, llm, registry, vector_store, conv_memory, runner = await get_runtime()
         
         # Register specialized agents
         if mode == "research":
@@ -85,8 +94,6 @@ def ask(
             from friday.agents.code_assistant import CodeAssistantAgent
             runner.register_agent(CodeAssistantAgent(llm, settings.workspace_dir))
         else:
-            # Default chat agent could be a simpler one or the runner itself
-            # For v0.1 we'll use a basic chat agent
             from friday.agents.base import BaseAgent, Context, AgentResult
             class ChatAgent(BaseAgent):
                 @property
@@ -109,7 +116,7 @@ def ask(
 def digest():
     """Run morning briefing."""
     async def _digest():
-        settings, llm, registry, vector_store, conv_memory, runner = get_runtime()
+        settings, llm, registry, vector_store, conv_memory, runner = await get_runtime()
         tts = TTSEngine(settings.persona_voice)
         
         from friday.agents.morning_digest import MorningDigestAgent
@@ -124,25 +131,56 @@ def digest():
 @app.command()
 def doctor():
     """Run diagnostics to check system health."""
-    settings, llm, registry, vector_store, conv_memory, runner = get_runtime()
+    async def _doctor():
+        settings, llm, registry, vector_store, conv_memory, runner = await get_runtime()
+        
+        table = Table(title="FRIDAY Diagnostics")
+        table.add_column("Component", style="cyan")
+        table.add_column("Status", style="magenta")
+        table.add_column("Details", style="yellow")
+        
+        # Check Ollama
+        try:
+            ollama_ok = await asyncio.to_thread(llm.is_available)
+            status = "[green]Online[/green]" if ollama_ok else "[red]Offline[/red]"
+            details = f"Base URL: {llm.base_url}"
+        except Exception as e:
+            status = "[red]Error[/red]"
+            details = str(e)
+        table.add_row("Ollama", status, details)
+        
+        # Check Config
+        config_ok = settings.config_dir.exists()
+        table.add_row("Config Directory", "[green]OK[/green]" if config_ok else "[red]Missing[/red]", str(settings.config_dir))
+        
+        # Check Skills
+        skills_count = len(registry.list_skills())
+        table.add_row("Skills Loaded", f"[green]{skills_count}[/green]", ", ".join([s["name"] for s in registry.list_skills()[:5]]))
+        
+        console.print(table)
     
-    table = Table(title="FRIDAY Diagnostics")
-    table.add_column("Component", style="cyan")
-    table.add_column("Status", style="magenta")
-    
-    # Check Ollama
-    ollama_ok = llm.is_available()
-    table.add_row("Ollama", "[green]Online[/green]" if ollama_ok else "[red]Offline[/red]")
-    
-    # Check Config
-    config_ok = settings.config_dir.exists()
-    table.add_row("Config Directory", "[green]OK[/green]" if config_ok else "[red]Missing[/red]")
-    
-    # Check Skills
-    skills_count = len(registry.list_skills())
-    table.add_row("Skills Loaded", f"[green]{skills_count}[/green]")
-    
-    console.print(table)
+    asyncio.run(_doctor())
+
+# Skill Management Subcommands
+skill_app = typer.Typer(help="Manage FRIDAY's skills.")
+app.add_typer(skill_app, name="skill")
+
+@skill_app.command("list")
+def list_skills():
+    """List all available skills."""
+    async def _list():
+        _, _, registry, _, _, _ = await get_runtime()
+        skills = registry.list_skills()
+        
+        table = Table(title="Available Skills")
+        table.add_column("Name", style="cyan")
+        table.add_column("Description", style="green")
+        
+        for skill in skills:
+            table.add_row(skill["name"], skill["description"])
+        
+        console.print(table)
+    asyncio.run(_list())
 
 @app.command()
 def memory(
@@ -151,7 +189,7 @@ def memory(
 ):
     """Manage FRIDAY's long-term memory."""
     async def _memory():
-        settings, llm, registry, vector_store, conv_memory, runner = get_runtime()
+        settings, llm, registry, vector_store, conv_memory, runner = await get_runtime()
         indexer = DocumentIndexer(vector_store)
         
         if action == "index" and path:
@@ -160,8 +198,11 @@ def memory(
             console.print(f"Indexed {count} chunks.")
         elif action == "clear":
             # For v0.1 reset vector store
-            vector_store.client.reset()
-            console.print("Memory cleared.")
+            if hasattr(vector_store.client, "reset"):
+                vector_store.client.reset()
+                console.print("Memory cleared.")
+            else:
+                console.print("[yellow]Warning: Vector store does not support reset.[/yellow]")
             
     asyncio.run(_memory())
 

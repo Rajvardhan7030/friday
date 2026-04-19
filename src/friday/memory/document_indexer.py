@@ -22,11 +22,20 @@ class DocumentIndexer:
             logger.warning(f"File {file_path} not found.")
             return 0
 
+        # Security: Size limit (max 50MB)
+        if file_path.stat().st_size > 50 * 1024 * 1024:
+            logger.warning(f"File {file_path} is too large ({file_path.stat().st_size} bytes). Skipping.")
+            return 0
+
         try:
-            async with aiofiles.open(file_path, mode='r', encoding='utf-8') as f:
+            # Detect encoding or default to utf-8
+            async with aiofiles.open(file_path, mode='r', encoding='utf-8', errors='ignore') as f:
                 content = await f.read()
 
             chunks = self._chunk_text(content)
+            if not chunks:
+                return 0
+
             metadatas = [{"source": str(file_path), "chunk": i} for i in range(len(chunks))]
             ids = [f"{file_path.name}_{i}" for i in range(len(chunks))]
 
@@ -44,7 +53,7 @@ class DocumentIndexer:
 
         total_chunks = 0
         # For simplicity, we only index common text formats for now
-        allowed_extensions = {".txt", ".md", ".pdf", ".py", ".yaml", ".yml", ".json"}
+        allowed_extensions = {".txt", ".md", ".py", ".yaml", ".yml", ".json", ".rst", ".adoc"}
         
         for file_path in dir_path.glob(glob_pattern):
             if file_path.suffix.lower() in allowed_extensions:
@@ -55,19 +64,26 @@ class DocumentIndexer:
         return total_chunks
 
     def _chunk_text(self, text: str) -> List[str]:
-        """Simple sliding window chunking."""
+        """Simple sliding window chunking with safety guards."""
+        if not text:
+            return []
+            
         if len(text) <= self.chunk_size:
             return [text]
 
         chunks = []
         start = 0
+        
+        # Ensure progress is made by using at least 1 byte if overlap >= chunk_size
+        step = max(1, self.chunk_size - self.chunk_overlap)
+        
         while start < len(text):
             end = start + self.chunk_size
             chunks.append(text[start:end])
-            start += self.chunk_size - self.chunk_overlap
+            start += step
             
-            # Prevent infinite loop if overlap is larger than chunk size
-            if start >= len(text) or self.chunk_overlap >= self.chunk_size:
+            # Prevent infinite loop
+            if start >= len(text):
                 break
                 
         return chunks

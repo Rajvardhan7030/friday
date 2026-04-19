@@ -1,5 +1,5 @@
 [project]
-name = "friday-ai"
+name = "friday"
 version = "0.1.0"
 description = "A local-first, privacy-centric personal AI assistant framework."
 readme = "README.md"
