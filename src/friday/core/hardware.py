@@ -30,7 +30,7 @@ class HardwareProfile:
         elif self.ram_gb >= 16:
             return "llama3.1:8b"
         elif self.ram_gb >= 8:
-            return "phi4"
+            return "tinyllama"
         else:
             return "tinyllama"
 

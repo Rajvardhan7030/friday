@@ -16,7 +16,7 @@ class LLMConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FRIDAY_LLM_", extra="ignore")
     
     primary_model: str = "qwen2.5-coder:7b"
-    fallback_model: str = "phi4"
+    fallback_model: str = "tinyllama"
     ollama_base_url: str = "http://localhost:11434"
     cloud_mode: bool = False
     openai_api_key: Optional[str] = None

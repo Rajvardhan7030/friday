@@ -86,7 +86,11 @@ def ask(
 
         settings, llm, registry, vector_store, conv_memory, runner = await get_runtime()
         
-        # Register specialized agents
+        # 1. Fetch history for context
+        session_id = "default" # TODO: Support multiple sessions
+        history = await conv_memory.get_history(session_id, limit=10)
+        
+        # 2. Register specialized agents
         if mode == "research":
             from friday.agents.research import ResearchAgent
             runner.register_agent(ResearchAgent(llm, vector_store))
@@ -101,14 +105,30 @@ def ask(
                 @property
                 def description(self): return "Simple chat agent."
                 async def run(self, ctx: Context):
-                    res = await self.llm.chat([{"role": "user", "content": ctx.user_query}])
+                    # Construct prompt with System Message for stability
+                    messages = [
+                        {"role": "system", "content": f"You are {settings.persona_name}, a helpful, concise AI assistant. Always reply directly and avoid long, unrelated templates or irrelevant content unless specifically asked."}
+                    ]
+                    # Add history
+                    messages.extend(ctx.chat_history)
+                    # Add current query
+                    messages.append({"role": "user", "content": ctx.user_query})
+                    
+                    res = await self.llm.chat(messages)
                     return AgentResult(content=res.content)
             runner.register_agent(ChatAgent(llm))
             
         with console.status(f"[bold green]FRIDAY is thinking ({mode} mode)...[/bold green]"):
-            result = await runner.run_agent(mode if mode != "chat" else "chat", query)
+            # 3. Add user message to memory
+            await conv_memory.add_message(session_id, "user", query)
             
-        console.print(f"\n[bold blue]FRIDAY:[/bold blue]\n{result.content}")
+            # 4. Run agent with history
+            result = await runner.run_agent(mode if mode != "chat" else "chat", query, history=history)
+            
+            # 5. Add assistant message to memory
+            await conv_memory.add_message(session_id, "assistant", result.content)
+            
+        console.print(f"\n[bold blue]{settings.persona_name}:[/bold blue]\n{result.content}")
         
     asyncio.run(_ask())
 
@@ -144,6 +164,40 @@ def doctor():
             ollama_ok = await asyncio.to_thread(llm.is_available)
             status = "[green]Online[/green]" if ollama_ok else "[red]Offline[/red]"
             details = f"Base URL: {llm.base_url}"
+            
+            if ollama_ok:
+                available_models = await llm.get_available_models()
+                primary = settings.llm.primary_model
+                fallback = settings.llm.fallback_model
+                
+                def is_available(model_name):
+                    if model_name in available_models:
+                        return True
+                    if ":" not in model_name:
+                        return f"{model_name}:latest" in available_models
+                    return False
+
+                missing_primary = not is_available(primary)
+                missing_fallback = not is_available(fallback)
+                
+                if missing_primary and missing_fallback:
+                    status = "[red]Critical[/red]"
+                    details += f"\n[red]Both primary and fallback models missing: {primary}, {fallback}[/red]"
+                    details += "\nRun 'ollama pull <model>' to fix or 'friday init' to re-detect hardware."
+                elif missing_primary:
+                    status = "[yellow]Degraded[/yellow]"
+                    details += f"\n[red]Primary model missing: {primary}[/red]"
+                    details += f"\n[green]Fallback model {fallback} is available.[/green]"
+                    details += f"\nRun 'ollama pull {primary}' to fix."
+                elif missing_fallback:
+                    # If fallback is missing but primary is fine, it's just a warning
+                    status = "[yellow]Warning[/yellow]"
+                    details += f"\n[red]Fallback model missing: {fallback}[/red]"
+                    details += "\n[green]Primary model is healthy.[/green]"
+                    details += "\nRun 'friday init' to update defaults or pull the missing model."
+                elif not available_models:
+                    status = "[yellow]No Models[/yellow]"
+                    details += "\n[red]No models found in Ollama.[/red]"
         except Exception as e:
             status = "[red]Error[/red]"
             details = str(e)

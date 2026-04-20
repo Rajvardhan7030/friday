@@ -83,7 +83,7 @@ class MorningDigestAgent(BaseAgent):
             if email['subject'] not in seen_subjects:
                 prompt += f"- From: {email['from']}, Subject: {email['subject']}\n"
                 seen_subjects.add(email['subject'])
-    ...
+
         prompt += "\n--- CALENDAR EVENTS ---\n"
         for event in calendar:
             prompt += f"- {event['time']}: {event['event']}\n"
