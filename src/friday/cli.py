@@ -74,7 +74,8 @@ def init():
 @app.command()
 def ask(
     query: str,
-    mode: str = typer.Option("chat", help="Agent mode: chat, research, code")
+    mode: str = typer.Option("chat", help="Agent mode: chat, research, code"),
+    voice: bool = typer.Option(False, "--voice", "-v", help="Enable voice output")
 ):
     """Ask FRIDAY a question."""
     async def _ask():
@@ -129,6 +130,17 @@ def ask(
             await conv_memory.add_message(session_id, "assistant", result.content)
             
         console.print(f"\n[bold blue]{settings.persona_name}:[/bold blue]\n{result.content}")
+
+        # 6. Speak if requested
+        if voice:
+            tts = TTSEngine(settings.persona_voice)
+            # Use downloaded model if available
+            model_path = settings.config_dir / "voices" / f"{settings.persona_voice}.onnx"
+            if model_path.exists():
+                tts.voice_model = str(model_path)
+            
+            with console.status("[bold cyan]FRIDAY is speaking...[/bold cyan]"):
+                await tts.speak(result.content)
         
     asyncio.run(_ask())
 
@@ -235,6 +247,78 @@ def list_skills():
         
         console.print(table)
     asyncio.run(_list())
+
+# Voice Management Subcommands
+voice_app = typer.Typer(help="Manage FRIDAY's voice.")
+app.add_typer(voice_app, name="voice")
+
+@voice_app.command("download")
+def download_voice(
+    model_name: Optional[str] = typer.Option(None, help="Voice model name (e.g., en_GB-southern_english_female-low)")
+):
+    """Download a Piper voice model."""
+    async def _download():
+        settings = FridaySettings.load()
+        model = model_name or settings.persona_voice
+        voice_dir = settings.config_dir / "voices"
+        voice_dir.mkdir(parents=True, exist_ok=True)
+        
+        console.print(f"[bold blue]Downloading voice model: {model}...[/bold blue]")
+        
+        import httpx
+        from pathlib import Path
+        
+        # Piper repo structure: {lang_family}/{lang_code}/{voice_name}/{quality}/{model}.onnx
+        base_url = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+        
+        # Robust parsing for model name like 'en_GB-southern_english_female-low'
+        try:
+            parts = model.split("-")
+            lang_code = parts[0] # en_GB
+            lang_family = lang_code.split("_")[0] # en
+            quality = parts[-1] # low
+            voice_name = "-".join(parts[1:-1]) # southern_english_female
+            
+            files = [f"{model}.onnx", f"{model}.onnx.json"]
+            
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                for file in files:
+                    url = f"{base_url}/{lang_family}/{lang_code}/{voice_name}/{quality}/{file}"
+                    target = voice_dir / file
+                    
+                    if target.exists():
+                        console.print(f"[yellow]File {file} already exists, skipping.[/yellow]")
+                        continue
+                    
+                    console.print(f"Fetching {file}...")
+                    response = await client.get(url)
+                    if response.status_code == 200:
+                        target.write_bytes(response.content)
+                        console.print(f"[green]Successfully downloaded {file}[/green]")
+                    else:
+                        console.print(f"[red]Failed to download {file}: HTTP {response.status_code}[/red]")
+                        console.print(f"URL tried: {url}")
+        except Exception as e:
+            console.print(f"[red]Error parsing model name: {e}[/red]")
+            console.print("Ensure model name follows format: lang_CODE-voice_name-quality")
+
+    asyncio.run(_download())
+
+@voice_app.command("test")
+def test_voice(text: str = typer.Argument("Hello, I am Friday. Your personal assistant.", help="The text to speak")):
+    """Test the current voice configuration."""
+    async def _test():
+        settings, _, _, _, _, _ = await get_runtime()
+        tts = TTSEngine(settings.persona_voice)
+        # Check if model exists in voices dir
+        model_path = settings.config_dir / "voices" / f"{settings.persona_voice}.onnx"
+        if model_path.exists():
+            tts.voice_model = str(model_path)
+            
+        console.print(f"[bold green]Speaking with voice: {settings.persona_voice}...[/bold green]")
+        await tts.speak(text)
+    
+    asyncio.run(_test())
 
 @app.command()
 def memory(

@@ -40,7 +40,7 @@ class FridaySettings(BaseSettings):
     memory: MemoryConfig = MemoryConfig()
     workspace_dir: Path = DEFAULT_CONFIG_DIR / "workspace"
     persona_name: str = "Friday"
-    persona_voice: str = "en_GB-vits-low"
+    persona_voice: str = "en_GB-southern_english_female-low"
 
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "FridaySettings":
