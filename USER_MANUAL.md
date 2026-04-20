@@ -11,6 +11,9 @@ Before installing FRIDAY, ensure you have the following installed:
   - Ubuntu/Debian: `sudo apt install ffmpeg`
   - macOS: `brew install ffmpeg`
   - Windows: `choco install ffmpeg`
+- **PortAudio**: Required for microphone input (STT).
+  - Ubuntu/Debian: `sudo apt install portaudio19-dev python3-pyaudio`
+  - macOS: `brew install portaudio`
 - **Piper**: The default TTS engine. Ensure the `piper` executable is in your PATH or set `PIPER_PATH`.
 
 ## 2. Installation

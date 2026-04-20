@@ -258,7 +258,7 @@ app.add_typer(voice_app, name="voice")
 @voice_app.command("download")
 def download_voice(
     model_name: Optional[str] = typer.Option(None, help="Voice model name"),
-    model_type: str = typer.Option("tts", "--model-type", "--type", help="Type of model: tts or stt")
+    model_type: str = typer.Option("tts", help="Type of model: tts or stt")
 ):
     """Download a Piper TTS or Vosk STT model."""
     async def _download():

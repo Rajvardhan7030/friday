@@ -37,5 +37,6 @@ src/friday/utils/__init__.py
 src/friday/utils/logging.py
 src/friday/utils/security.py
 src/friday/voice/__init__.py
+src/friday/voice/stt.py
 src/friday/voice/tts.py
 tests/test_agents.py

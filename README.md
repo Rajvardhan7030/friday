@@ -12,7 +12,7 @@ A local-first, privacy-centric personal AI assistant framework.
 1. Install [Ollama](https://ollama.ai/)
 2. Install FRIDAY:
    ```bash
-   pip install .
+   pip install -e .
    ```
 3. Initialize:
    ```bash

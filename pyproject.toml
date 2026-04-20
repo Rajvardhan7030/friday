@@ -27,6 +27,8 @@ dependencies = [
     "psutil>=5.9.0",
     "GPUtil>=1.4.0",
     "platformdirs>=4.0.0",
+    "pyaudio>=0.2.14",
+    "vosk>=0.3.45",
 ]
 
 [project.optional-dependencies]
