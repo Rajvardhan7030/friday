@@ -1,49 +1,64 @@
-"""Code Assistant Agent with CodeAct pattern."""
+"""Code Assistant Agent that registers as a command handler."""
 
 import logging
 import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from friday.agents.base import BaseAgent, Context, AgentResult
-from friday.llm.engine import LLMEngine, Message
-from friday.utils.security import run_sandboxed_code
+from ..core.registry import registry
+from ..core.agent_runner import Session
+from ..core.config import Config
+from ..llm.engine import LLMEngine, Message
+from ..utils.security import run_sandboxed_code
 
 logger = logging.getLogger(__name__)
 
-class CodeAssistantAgent(BaseAgent):
-    """Agent that writes and executes Python/bash code to solve tasks."""
+@registry.register(
+    name="Code Task",
+    regex=r"(?:create|write|run|execute|make|generate) (?:a )?(?:file|code|script|program) (.+)",
+    description="Handle coding and file system tasks",
+    usage="create a file named hello.py",
+    priority=5
+)
+async def code_task_handler(session: Session, task_description: str, llm: Optional[LLMEngine] = None, config: Optional[Config] = None):
+    """
+    Handler for coding tasks that uses the LLM to generate code 
+    and executes it in a sandbox.
+    """
+    if not llm:
+        return "Internal Error: LLM engine not available for coding tasks."
+    
+    # Resolve workspace directory
+    workspace_dir = Path.home() / "Desktop" # Use Desktop as requested for this specific task
+    if config:
+        workspace_dir = Path(config.get("base_dir", Path.home() / ".friday")) / "workspace"
+    
+    # If the user explicitly mentions 'desktop', use that
+    if "desktop" in task_description.lower() or "desktop" in session.history[-1]["content"].lower() if session.history else False:
+        workspace_dir = Path.home() / "Desktop"
 
-    def __init__(self, llm_engine: LLMEngine, workspace_dir: Path):
-        super().__init__(llm_engine)
-        self.workspace_dir = workspace_dir
-
-    @property
-    def name(self) -> str:
-        return "code"
-
-    @property
-    def description(self) -> str:
-        return "Code assistant that can write and execute Python code in a sandbox."
-
-    async def run(self, ctx: Context) -> AgentResult:
-        """Run the CodeAct loop."""
-        logger.info(f"Solving code task: {ctx.user_query}")
-        
-        # v0.1: single turn CodeAct for simplicity
-        messages = [
-            Message(role="system", content=f"You are Friday Code Assistant. You solve tasks by writing Python code. Wrap your code in ```python ... ``` blocks. You have access to a workspace directory at {self.workspace_dir}."),
-            Message(role="user", content=ctx.user_query)
-        ]
-        
-        response = await self.llm.chat(messages)
+    logger.info(f"Handling code task: {task_description}")
+    
+    # Construct the prompt for the Code Assistant
+    messages = [
+        Message(role="system", content=(
+            "You are Friday Code Assistant. You solve tasks by writing Python code. "
+            "Wrap your code in ```python ... ``` blocks. "
+            f"Current workspace directory is: {workspace_dir}. "
+            "Focus on the request and write clean, safe code."
+        )),
+        Message(role="user", content=task_description)
+    ]
+    
+    try:
+        response = await llm.chat(messages)
         content = response.content
         
         # Parse and execute code blocks
-        code_blocks = self._extract_python_code(content)
+        code_blocks = re.findall(r"```python\n(.*?)\n```", content, re.DOTALL)
         execution_results = []
         
         for code in code_blocks:
-            success, output = run_sandboxed_code(code, self.workspace_dir)
+            success, output = run_sandboxed_code(code, workspace_dir, config=config)
             execution_results.append({
                 "code": code,
                 "success": success,
@@ -52,23 +67,19 @@ class CodeAssistantAgent(BaseAgent):
             
         # Final synthesis
         if execution_results:
-            synthesis_prompt = f"Original Query: {ctx.user_query}\n\nCode execution results:\n"
+            synthesis_prompt = f"Original Task: {task_description}\n\nCode execution results:\n"
             for res in execution_results:
                 synthesis_prompt += f"--- CODE ---\n{res['code']}\n--- OUTPUT ---\n{res['output']}\n\n"
-            synthesis_prompt += "Please summarize the results above."
+            synthesis_prompt += "Please summarize if the task was completed successfully based on the output."
             
-            synthesis_response = await self.llm.chat([
+            synthesis_response = await llm.chat([
                 Message(role="system", content="Summarize the code execution results clearly for the user."),
                 Message(role="user", content=synthesis_prompt)
             ])
-            content = synthesis_response.content
+            return synthesis_response.content
 
-        return AgentResult(
-            content=content,
-            metadata={"executions": execution_results}
-        )
-
-    def _extract_python_code(self, text: str) -> List[str]:
-        """Extract code from markdown python blocks."""
-        pattern = r"```python\n(.*?)\n```"
-        return re.findall(pattern, text, re.DOTALL)
+        return content # Return original response if no code blocks found
+        
+    except Exception as e:
+        logger.error(f"Code assistant handler failed: {e}")
+        return f"I tried to solve that task with code, but something went wrong: {str(e)}"

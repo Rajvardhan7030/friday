@@ -40,8 +40,8 @@ class Config:
             },
             "voice": {
                 "tts": {
-                    "model": "en_GB-vits-low",
-                    "model_path": str(self.base_dir / "models" / "en_GB-vits-low.onnx"),
+                    "model": "en_GB-jenny_dioco-medium",
+                    "model_path": str(self.base_dir / "models" / "en_GB-jenny_dioco-medium.onnx"),
                     "piper_path": "piper",
                 },
                 "stt": {
@@ -56,6 +56,12 @@ class Config:
             "security": {
                 "sandbox_timeout": 30,
                 "sandbox_backend": "unshare",  # or 'docker', 'none'
+            },
+            "llm": {
+                "engine": "ollama",
+                "primary_model": "mistral:latest",
+                "fallback_model": "llama3:latest",
+                "base_url": "http://localhost:11434",
             },
         }
 
@@ -121,6 +127,7 @@ def download_model(url: str, dest: Union[str, Path]) -> None:
     logger.info(f"Downloading model from {url} to {dest_path}")
     
     response = requests.get(url, stream=True)
+    response.raise_for_status()
     total_size = int(response.headers.get('content-length', 0))
     
     with open(dest_path, "wb") as f, tqdm(

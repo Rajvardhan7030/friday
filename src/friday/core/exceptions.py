@@ -34,3 +34,8 @@ class AudioDeviceError(FridayError):
 class ConfigurationError(FridayError):
     """Raised when there is an error in the configuration."""
     pass
+
+
+class LLMError(FridayError):
+    """Raised when an LLM engine fails or a model is missing in the engine."""
+    pass

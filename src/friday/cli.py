@@ -1,456 +1,227 @@
-"""Typer-based CLI entrypoint for FRIDAY."""
+"""CLI Interface for Friday."""
 
 import asyncio
 import logging
-import typer
+import sys
 from pathlib import Path
 from rich.console import Console
-from rich.table import Table
-from typing import Optional
+from rich.panel import Panel
+from rich.prompt import Prompt
 
-from friday.core.config import FridaySettings, DEFAULT_CONFIG_DIR
-from friday.core.hardware import get_hardware_profile
-from friday.core.agent_runner import AgentRunner
-from friday.core.registry import SkillRegistry
-from friday.llm.local import LocalEngine
-from friday.memory.vector_store import VectorStore
-from friday.memory.document_indexer import DocumentIndexer
-from friday.memory.conversation import ConversationMemory
-from friday.voice.tts import TTSEngine
-from friday.utils.logging import setup_logging
+from .core.config import Config
+from .core.agent_runner import AgentRunner
+from .core.exceptions import ModelNotFoundError
+from .utils.logging import setup_logging
+from .voice.tts import TTSEngine
+from .voice.stt import STTEngine
 
-app = typer.Typer(help="FRIDAY: Your local-first, privacy-centric AI assistant.")
 console = Console()
+logger = logging.getLogger(__name__)
 
-async def get_runtime():
-    """Initialize core runtime components asynchronously."""
-    settings = FridaySettings.load()
-    setup_logging(settings.config_dir / "friday.log", level=logging.INFO)
-    
-    llm = LocalEngine(
-        primary_model=settings.llm.primary_model,
-        fallback_model=settings.llm.fallback_model,
-        base_url=settings.llm.ollama_base_url
-    )
-    
-    registry = SkillRegistry(user_skills_dir=settings.config_dir / "skills")
-    registry.discover_built_in()
-    registry.discover_user_skills()
-    
-    vector_store = VectorStore(str(settings.memory.vector_db_path), llm)
-    conv_memory = ConversationMemory(str(settings.memory.sqlite_db_path))
-    
-    await vector_store.initialize()
-    await conv_memory.initialize()
-    
-    runner = AgentRunner(llm, registry)
-    
-    return settings, llm, registry, vector_store, conv_memory, runner
+class FridayCLI:
+    """The CLI interface and main event loop for Friday."""
 
-@app.command()
-def init():
-    """Initialize hardware, config, and models."""
-    console.print("[bold blue]Initializing FRIDAY...[/bold blue]")
-    
-    # 1. Hardware detection
-    profile = get_hardware_profile()
-    console.print(f"Hardware detected: {profile.os}, {profile.cpu_cores} cores, {profile.ram_gb:.1f}GB RAM")
-    
-    recommended = profile.recommend_model()
-    console.print(f"Recommended model based on your hardware: [bold green]{recommended}[/bold green]")
-    
-    # 2. Create config
-    settings = FridaySettings()
-    settings.llm.primary_model = recommended
-    settings.save()
-    console.print(f"Configuration saved to {DEFAULT_CONFIG_DIR}")
-    
-    # 3. Model Pull instructions
-    console.print(f"\n[bold yellow]Next steps:[/bold yellow]")
-    console.print(f"1. Install Ollama if you haven't already: https://ollama.ai/")
-    console.print(f"2. Pull the recommended model: [cyan]ollama pull {recommended}[/cyan]")
-    console.print(f"3. Run [cyan]friday doctor[/cyan] to verify installation.")
+    def __init__(self):
+        self.config = Config()
+        setup_logging(Path(self.config.get("logging.file")))
+        
+        self.runner = AgentRunner(self.config)
+        self.tts = TTSEngine(self.config)
+        self.stt = STTEngine(self.config)
+        self.voice_mode = False
 
-@app.command()
-def ask(
-    query: str,
-    mode: str = typer.Option("chat", help="Agent mode: chat, research, code"),
-    voice: bool = typer.Option(False, "--voice", "-v", help="Enable voice output")
-):
-    """Ask FRIDAY a question."""
-    async def _ask():
-        # Security: Basic Prompt Injection Detection
-        injection_markers = ["ignore previous", "system prompt", "dan mode", "you are now"]
-        if any(marker in query.lower() for marker in injection_markers):
-            console.print("[bold red]Error: Potential prompt injection detected in query.[/bold red]")
-            raise typer.Exit(code=1)
-
-        settings, llm, registry, vector_store, conv_memory, runner = await get_runtime()
-        
-        # 1. Fetch history for context
-        session_id = "default" # TODO: Support multiple sessions
-        history = await conv_memory.get_history(session_id, limit=10)
-        
-        # 2. Register specialized agents
-        if mode == "research":
-            from friday.agents.research import ResearchAgent
-            runner.register_agent(ResearchAgent(llm, vector_store))
-        elif mode == "code":
-            from friday.agents.code_assistant import CodeAssistantAgent
-            runner.register_agent(CodeAssistantAgent(llm, settings.workspace_dir))
-        else:
-            from friday.agents.base import BaseAgent, Context, AgentResult
-            class ChatAgent(BaseAgent):
-                @property
-                def name(self): return "chat"
-                @property
-                def description(self): return "Simple chat agent."
-                async def run(self, ctx: Context):
-                    # Construct prompt with System Message for stability and personality
-                    verbosity_info = f"Please provide {settings.persona_verbosity} responses."
-                    system_content = f"{settings.persona_instructions} {verbosity_info}"
-                    
-                    messages = [
-                        {"role": "system", "content": system_content}
-                    ]
-                    # Add history
-                    messages.extend(ctx.chat_history)
-                    # Add current query
-                    messages.append({"role": "user", "content": ctx.user_query})
-                    
-                    res = await self.llm.chat(messages)
-                    return AgentResult(content=res.content)
-            runner.register_agent(ChatAgent(llm))
-            
-        with console.status(f"[bold green]FRIDAY is thinking ({mode} mode)...[/bold green]"):
-            # 3. Add user message to memory
-            await conv_memory.add_message(session_id, "user", query)
-            
-            # 4. Run agent with history
-            result = await runner.run_agent(mode if mode != "chat" else "chat", query, history=history)
-            
-            # 5. Add assistant message to memory
-            await conv_memory.add_message(session_id, "assistant", result.content)
-            
-        console.print(f"\n[bold blue]{settings.persona_name}:[/bold blue]\n{result.content}")
-
-        # 6. Speak if requested
-        if voice:
-            tts = TTSEngine(settings.persona_voice)
-            # Use downloaded model if available
-            model_path = settings.config_dir / "voices" / f"{settings.persona_voice}.onnx"
-            if model_path.exists():
-                tts.voice_model = str(model_path)
-            
-            with console.status("[bold cyan]FRIDAY is speaking...[/bold cyan]"):
-                await tts.speak(result.content)
-        
-    asyncio.run(_ask())
-
-@app.command()
-def digest():
-    """Run morning briefing."""
-    async def _digest():
-        settings, llm, registry, vector_store, conv_memory, runner = await get_runtime()
-        tts = TTSEngine(settings.persona_voice)
-        
-        from friday.agents.morning_digest import MorningDigestAgent
-        agent = MorningDigestAgent(llm, tts)
-        
-        console.print("[bold blue]Starting Morning Digest...[/bold blue]")
-        result = await agent.run(None) # Context not needed for digest
-        console.print(f"\n[bold green]Briefing completed.[/bold green]\n{result.content}")
-
-    asyncio.run(_digest())
-
-@app.command()
-def doctor():
-    """Run diagnostics to check system health."""
-    async def _doctor():
-        settings, llm, registry, vector_store, conv_memory, runner = await get_runtime()
-        
-        table = Table(title="FRIDAY Diagnostics")
-        table.add_column("Component", style="cyan")
-        table.add_column("Status", style="magenta")
-        table.add_column("Details", style="yellow")
-        
-        # Check Ollama
-        try:
-            ollama_ok = await asyncio.to_thread(llm.is_available)
-            status = "[green]Online[/green]" if ollama_ok else "[red]Offline[/red]"
-            details = f"Base URL: {llm.base_url}"
-            
-            if ollama_ok:
-                available_models = await llm.get_available_models()
-                primary = settings.llm.primary_model
-                fallback = settings.llm.fallback_model
-                
-                def is_available(model_name):
-                    if model_name in available_models:
-                        return True
-                    if ":" not in model_name:
-                        return f"{model_name}:latest" in available_models
-                    return False
-
-                missing_primary = not is_available(primary)
-                missing_fallback = not is_available(fallback)
-                
-                if missing_primary and missing_fallback:
-                    status = "[red]Critical[/red]"
-                    details += f"\n[red]Both primary and fallback models missing: {primary}, {fallback}[/red]"
-                    details += "\nRun 'ollama pull <model>' to fix or 'friday init' to re-detect hardware."
-                elif missing_primary:
-                    status = "[yellow]Degraded[/yellow]"
-                    details += f"\n[red]Primary model missing: {primary}[/red]"
-                    details += f"\n[green]Fallback model {fallback} is available.[/green]"
-                    details += f"\nRun 'ollama pull {primary}' to fix."
-                elif missing_fallback:
-                    # If fallback is missing but primary is fine, it's just a warning
-                    status = "[yellow]Warning[/yellow]"
-                    details += f"\n[red]Fallback model missing: {fallback}[/red]"
-                    details += "\n[green]Primary model is healthy.[/green]"
-                    details += "\nRun 'friday init' to update defaults or pull the missing model."
-                elif not available_models:
-                    status = "[yellow]No Models[/yellow]"
-                    details += "\n[red]No models found in Ollama.[/red]"
-        except Exception as e:
-            status = "[red]Error[/red]"
-            details = str(e)
-        table.add_row("Ollama", status, details)
-        
-        # Check Config
-        config_ok = settings.config_dir.exists()
-        table.add_row("Config Directory", "[green]OK[/green]" if config_ok else "[red]Missing[/red]", str(settings.config_dir))
-        
-        # Check Skills
-        skills_count = len(registry.list_skills())
-        table.add_row("Skills Loaded", f"[green]{skills_count}[/green]", ", ".join([s["name"] for s in registry.list_skills()[:5]]))
-        
-        console.print(table)
-    
-    asyncio.run(_doctor())
-
-# Skill Management Subcommands
-skill_app = typer.Typer(help="Manage FRIDAY's skills.")
-app.add_typer(skill_app, name="skill")
-
-@skill_app.command("list")
-def list_skills():
-    """List all available skills."""
-    async def _list():
-        _, _, registry, _, _, _ = await get_runtime()
-        skills = registry.list_skills()
-        
-        table = Table(title="Available Skills")
-        table.add_column("Name", style="cyan")
-        table.add_column("Description", style="green")
-        
-        for skill in skills:
-            table.add_row(skill["name"], skill["description"])
-        
-        console.print(table)
-    asyncio.run(_list())
-
-# Voice Management Subcommands
-voice_app = typer.Typer(help="Manage FRIDAY's voice.")
-app.add_typer(voice_app, name="voice")
-
-@voice_app.command("download")
-def download_voice(
-    model_name: Optional[str] = typer.Option(None, help="Voice model name"),
-    model_type: str = typer.Option("tts", "--model-type", "--type", help="Type of model: tts or stt")
-):
-    """Download a Piper TTS or Vosk STT model."""
-    async def _download():
-        settings = FridaySettings.load()
-        import httpx
-        from pathlib import Path
-        import zipfile
-        import io
-        
-        if model_type == "tts":
-            model = model_name or settings.persona_voice
-            voice_dir = settings.config_dir / "voices"
-            voice_dir.mkdir(parents=True, exist_ok=True)
-            
-            console.print(f"[bold blue]Downloading TTS model: {model}...[/bold blue]")
-            
-            base_url = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
-            try:
-                parts = model.split("-")
-                lang_code = parts[0]
-                lang_family = lang_code.split("_")[0]
-                quality = parts[-1]
-                voice_name = "-".join(parts[1:-1])
-                
-                files = [f"{model}.onnx", f"{model}.onnx.json"]
-                
-                async with httpx.AsyncClient(follow_redirects=True) as client:
-                    for file in files:
-                        url = f"{base_url}/{lang_family}/{lang_code}/{voice_name}/{quality}/{file}"
-                        target = voice_dir / file
-                        
-                        if target.exists():
-                            console.print(f"[yellow]File {file} already exists, skipping.[/yellow]")
-                            continue
-                        
-                        console.print(f"Fetching {file}...")
-                        response = await client.get(url)
-                        if response.status_code == 200:
-                            target.write_bytes(response.content)
-                            console.print(f"[green]Successfully downloaded {file}[/green]")
-                        else:
-                            console.print(f"[red]Failed to download {file}: HTTP {response.status_code}[/red]")
-            except Exception as e:
-                console.print(f"[red]Error parsing TTS model name: {e}[/red]")
-
-        elif model_type == "stt":
-            model = model_name or settings.persona_stt_model
-            stt_dir = settings.config_dir / "stt_models"
-            stt_dir.mkdir(parents=True, exist_ok=True)
-            target_dir = stt_dir / model
-            
-            if target_dir.exists():
-                console.print(f"[yellow]STT model {model} already exists at {target_dir}. Skipping.[/yellow]")
-                return
-
-            console.print(f"[bold blue]Downloading STT model: {model}...[/bold blue]")
-            url = f"https://alphacephei.com/vosk/models/{model}.zip"
-            
-            try:
-                async with httpx.AsyncClient(follow_redirects=True) as client:
-                    console.print(f"Fetching {model}.zip (This may take a minute)...")
-                    # Using a simple get for small models (40MB). Streaming is better for large ones, but this works for small-en.
-                    response = await client.get(url, timeout=60.0)
-                    if response.status_code == 200:
-                        console.print("[green]Download complete. Extracting...[/green]")
-                        with zipfile.ZipFile(io.BytesIO(response.content)) as z:
-                            z.extractall(stt_dir)
-                        console.print(f"[green]Successfully installed STT model to {target_dir}[/green]")
-                    else:
-                        console.print(f"[red]Failed to download: HTTP {response.status_code}[/red]")
-            except Exception as e:
-                console.print(f"[red]Error downloading STT model: {e}[/red]")
-
-    asyncio.run(_download())
-
-@voice_app.command("chat")
-def voice_chat():
-    """Start an interactive voice chat session with FRIDAY."""
-    async def _chat():
-        from friday.voice.stt import STTEngine
-        settings, llm, registry, vector_store, conv_memory, runner = await get_runtime()
-        
-        # Setup TTS
-        tts = TTSEngine(settings.persona_voice)
-        model_path = settings.config_dir / "voices" / f"{settings.persona_voice}.onnx"
-        if model_path.exists():
-            tts.voice_model = str(model_path)
-            
-        # Setup STT
-        stt_model_path = str(settings.config_dir / "stt_models" / settings.persona_stt_model)
-        stt = STTEngine(model_path=stt_model_path)
-        
-        # Setup Agent
-        from friday.agents.base import BaseAgent, Context, AgentResult
-        class ChatAgent(BaseAgent):
-            @property
-            def name(self): return "chat"
-            @property
-            def description(self): return "Voice chat agent."
-            async def run(self, ctx: Context):
-                verbosity_info = f"Please provide {settings.persona_verbosity} responses. Keep them very short for voice."
-                system_content = f"{settings.persona_instructions} {verbosity_info}"
-                messages = [{"role": "system", "content": system_content}]
-                messages.extend(ctx.chat_history)
-                messages.append({"role": "user", "content": ctx.user_query})
-                res = await self.llm.chat(messages)
-                return AgentResult(content=res.content)
-                
-        runner.register_agent(ChatAgent(llm))
-        session_id = "voice_session"
-        
-        console.print("[bold green]Voice mode activated. Say 'Goodbye' or press Ctrl+C to exit.[/bold green]")
-        
-        # Greet user
-        greeting = "Hello. I am listening."
-        console.print(f"[bold blue]{settings.persona_name}:[/bold blue] {greeting}")
-        await tts.speak(greeting)
+    async def run(self):
+        """Run the main interactive loop."""
+        console.print(Panel(
+            "[bold green]FRIDAY SYSTEM ONLINE[/bold green]\n"
+            "[dim]Type 'help' for commands, 'voice on/off' to toggle, or 'exit' to quit.[/dim]",
+            title="Friday v0.2",
+            subtitle="Local AI Assistant"
+        ))
 
         while True:
             try:
-                with console.status("[bold yellow]Listening...[/bold yellow]"):
-                    user_text = await stt.listen(timeout=30, silence_limit=2)
-                
-                if not user_text:
+                if self.voice_mode:
+                    console.print("[dim italic]Listening...[/dim italic]")
+                    user_input = await self.stt.listen()
+                    if user_input:
+                        console.print(f"[bold blue]You (Voice):[/bold blue] {user_input}")
+                    else:
+                        continue # Silent mic or timeout
+                else:
+                    user_input = Prompt.ask("[bold blue]>>>[/bold blue]")
+
+                if not user_input:
                     continue
-                    
-                console.print(f"[bold cyan]You:[/bold cyan] {user_text}")
-                
-                if any(word in user_text.lower() for word in ["goodbye", "exit", "quit", "stop"]):
-                    farewell = "Goodbye!"
-                    console.print(f"[bold blue]{settings.persona_name}:[/bold blue] {farewell}")
-                    await tts.speak(farewell)
+
+                if user_input.lower() in ["exit", "quit", "bye"]:
+                    await self.speak("Goodbye!")
                     break
-                    
-                with console.status("[bold green]Thinking...[/bold green]"):
-                    history = await conv_memory.get_history(session_id, limit=5)
-                    await conv_memory.add_message(session_id, "user", user_text)
-                    result = await runner.run_agent("chat", user_text, history=history)
-                    await conv_memory.add_message(session_id, "assistant", result.content)
-                    
-                console.print(f"[bold blue]{settings.persona_name}:[/bold blue] {result.content}")
+
+                if user_input.lower() == "voice on":
+                    self.voice_mode = True
+                    await self.speak("Voice mode enabled.")
+                    continue
+                elif user_input.lower() == "voice off":
+                    self.voice_mode = False
+                    await self.speak("Voice mode disabled.")
+                    continue
+
+                # Process through the Runner
+                response = await self.runner.handle_input(user_input)
                 
-                with console.status("[bold cyan]Speaking...[/bold cyan]"):
-                    await tts.speak(result.content)
-                    
+                # Output to console and voice
+                console.print(f"\n[bold green]Friday:[/bold green] {response}\n")
+                await self.speak(response)
+
             except KeyboardInterrupt:
                 break
+            except ModelNotFoundError as e:
+                console.print(f"[bold yellow]Voice Disabled:[/bold yellow] {e}")
+                self.voice_mode = False
+                console.print("[dim]Reverting to text mode. You can still use commands.[/dim]")
             except Exception as e:
-                console.print(f"[red]Error during chat: {e}[/red]")
-                break
-                
-    asyncio.run(_chat())
+                logger.error(f"Loop error: {e}", exc_info=True)
+                console.print(f"[bold red]System Error:[/bold red] {str(e)}")
 
-@voice_app.command("test")
-def test_voice(text: str = typer.Argument("Hello, I am Friday. Your personal assistant.", help="The text to speak")):
-    """Test the current voice configuration."""
-    async def _test():
-        settings, _, _, _, _, _ = await get_runtime()
-        tts = TTSEngine(settings.persona_voice)
-        # Check if model exists in voices dir
-        model_path = settings.config_dir / "voices" / f"{settings.persona_voice}.onnx"
-        if model_path.exists():
-            tts.voice_model = str(model_path)
-            
-        console.print(f"[bold green]Speaking with voice: {settings.persona_voice}...[/bold green]")
-        await tts.speak(text)
-    
-    asyncio.run(_test())
-
-@app.command()
-def memory(
-    action: str = typer.Argument(..., help="Action: index, clear"),
-    path: Optional[str] = typer.Option(None, help="Path to index")
-):
-    """Manage FRIDAY's long-term memory."""
-    async def _memory():
-        settings, llm, registry, vector_store, conv_memory, runner = await get_runtime()
-        indexer = DocumentIndexer(vector_store)
+    async def speak(self, text: str):
+        """Handle both console and optional voice output."""
+        import re
+        # Clean text for TTS (remove all rich tags [tag]...[/tag] or [tag])
+        clean_text = re.sub(r"\[.*?\]", "", text)
         
-        if action == "index" and path:
-            console.print(f"Indexing path: {path}...")
-            count = await indexer.index_directory(Path(path))
-            console.print(f"Indexed {count} chunks.")
-        elif action == "clear":
-            # For v0.1 reset vector store
-            if hasattr(vector_store.client, "reset"):
-                vector_store.client.reset()
-                console.print("Memory cleared.")
-            else:
-                console.print("[yellow]Warning: Vector store does not support reset.[/yellow]")
-            
-    asyncio.run(_memory())
+        try:
+            await self.tts.speak(clean_text, block=False)
+        except Exception:
+            # Silent failure since text is already on screen
+            pass
+
+
+async def voice_download():
+    """Download and extract voice models."""
+    from .core.config import download_model
+    import zipfile
+    config = Config()
+    
+    models = {
+        "TTS (Piper)": (
+            "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/jenny_dioco/medium/en_GB-jenny_dioco-medium.onnx",
+            Path(config.get("voice.tts.model_path"))
+        ),
+        "TTS Config": (
+            "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/jenny_dioco/medium/en_GB-jenny_dioco-medium.onnx.json",
+            Path(config.get("voice.tts.model_path")).with_suffix(".onnx.json")
+        ),
+        "STT (Vosk)": (
+            "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+            Path(config.get("voice.stt.model_path")).with_suffix(".zip")
+        )
+    }
+
+    try:
+        console.print("[bold blue]Starting model downloads...[/bold blue]")
+        for name, (url, dest) in models.items():
+            try:
+                # If model already exists, check if valid, otherwise skip
+                if name.startswith("TTS"):
+                    if dest.exists() and dest.stat().st_size > 0:
+                        console.print(f"[dim]{name} already exists. Skipping.[/dim]")
+                        continue
+
+                console.print(f"Fetching [cyan]{name}[/cyan]...")
+                download_model(url, dest)
+                
+                # Auto-extract STT
+                if name == "STT (Vosk)":
+                    console.print(f"Extracting [cyan]{name}[/cyan]...")
+                    with zipfile.ZipFile(dest, 'r') as zip_ref:
+                        zip_ref.extractall(dest.parent)
+                    dest.unlink() # Cleanup zip
+                    
+            except Exception as e:
+                console.print(f"[bold red]Failed to download {name}:[/bold red] {str(e)}")
+
+        console.print("[bold green]Download and setup complete.[/bold green]")
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Download interrupted by user.[/yellow]")
+
+async def friday_doctor():
+    """Perform a system health check."""
+    config = Config()
+    console.print(Panel("[bold blue]FRIDAY System Doctor[/bold blue]", expand=False))
+    
+    # 1. Check Configuration & Logs
+    console.print(f"• Config: [green]OK[/green] ({config.config_path})")
+    log_file = Path(config.get("logging.file"))
+    if log_file.exists():
+        mode = oct(log_file.stat().st_mode & 0o777)
+        status = "[green]OK[/green]" if mode == "0o600" else f"[yellow]WARN (mode {mode})[/yellow]"
+        console.print(f"• Logging: {status} ({log_file})")
+    
+    # 2. Check LLM (Ollama)
+    from .llm.local import LocalEngine
+    llm = LocalEngine(config.get("llm.primary_model"), config.get("llm.fallback_model"), config.get("llm.base_url"))
+    if await llm.is_available_async():
+        models = await llm.get_available_models()
+        model_list = ", ".join(models) if models else "None"
+        console.print(f"• LLM (Ollama): [green]ONLINE[/green] (Models: {model_list})")
+    else:
+        console.print("• LLM (Ollama): [bold red]OFFLINE[/bold red] (Is Ollama running?)")
+
+    # 3. Check Voice Models
+    tts_path = Path(config.get("voice.tts.model_path"))
+    tts_status = "[green]EXISTS[/green]" if tts_path.exists() else "[red]MISSING[/red]"
+    console.print(f"• TTS Model: {tts_status} ({tts_path.name})")
+    
+    stt_path = Path(config.get("voice.stt.model_path"))
+    stt_status = "[green]EXISTS[/green]" if stt_path.exists() else "[red]MISSING[/red]"
+    console.print(f"• STT Model: {stt_status} ({stt_path.name})")
+
+    # 4. Check Audio Devices
+    try:
+        from .voice.stt import ignore_stderr
+        with ignore_stderr():
+            mics = STTEngine.list_microphones()
+        if mics:
+            console.print(f"• Audio Input: [green]OK[/green] ({len(mics)} devices found)")
+        else:
+            console.print("• Audio Input: [yellow]WARN[/yellow] (No microphones detected)")
+    except Exception as e:
+        console.print(f"• Audio Input: [red]ERROR[/red] ({e})")
+
+async def main():
+    """Main interactive loop."""
+    cli = FridayCLI()
+    await cli.run()
+
+def app():
+    """Entry point for the friday CLI as defined in pyproject.toml."""
+    # Better arg matching
+    args = [a.lower() for a in sys.argv[1:]]
+    
+    if "voice" in args and "download" in args:
+        try:
+            asyncio.run(voice_download())
+            return
+        except Exception as e:
+            print(f"Download task failed: {e}")
+            sys.exit(1)
+
+    if "doctor" in args:
+        try:
+            asyncio.run(friday_doctor())
+            return
+        except Exception as e:
+            print(f"Doctor failed: {e}")
+            sys.exit(1)
+    
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        print(f"Fatal error: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     app()

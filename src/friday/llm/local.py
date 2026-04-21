@@ -50,6 +50,8 @@ class LocalEngine(LLMEngine):
             )
             
             content = response.get('message', {}).get('content', "")
+            # Reset fallback flag on success
+            self._in_fallback = False
             
             return LLMResponse(
                 content=content,
@@ -61,22 +63,21 @@ class LocalEngine(LLMEngine):
             if "not found" in error_msg.lower() or "404" in error_msg:
                 logger.warning(f"Model '{self._current_model}' not found in Ollama.")
                 
-                # Try to find any available model as a last-resort fallback
                 if not self._in_fallback:
                     if self._current_model == self._primary_model:
                         logger.info(f"Attempting fallback to {self._fallback_model}")
                         self._current_model = self._fallback_model
-                        self._in_fallback = True
                         return await self.chat(messages, tools, stream)
                     else:
-                        # We are already in fallback or current model is not primary, 
-                        # let's see if ANY model is available
+                        # Final attempt: use ANY available model
+                        self._in_fallback = True
                         available = await self.get_available_models()
                         if available:
-                            last_resort = available[0]
-                            logger.info(f"Last resort: falling back to available model '{last_resort}'")
+                            # Filter out the models we already tried
+                            others = [m for m in available if m not in [self._primary_model, self._fallback_model]]
+                            last_resort = others[0] if others else available[0]
+                            logger.info(f"Using available model '{last_resort}' as last resort.")
                             self._current_model = last_resort
-                            self._in_fallback = True # Prevent infinite loop
                             return await self.chat(messages, tools, stream)
 
             logger.error(f"Ollama chat error with {self._current_model}: {e}")
