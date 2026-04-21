@@ -1,12 +1,11 @@
 """Local Speech-to-Text using Vosk and PyAudio."""
 
-import os
 import json
-import queue
 import logging
 import asyncio
+import numpy as np
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict
 
 try:
     import pyaudio
@@ -15,109 +14,168 @@ except ImportError:
     pyaudio = None
     vosk = None
 
+from ..core.config import Config
+from ..core.exceptions import ModelNotFoundError, AudioDeviceError
+
 logger = logging.getLogger(__name__)
 
-class STTEngine:
-    """Local Speech-to-Text engine with silence detection."""
 
-    def __init__(self, model_path: Optional[str] = None):
-        self.model_path = model_path
+class STTEngine:
+    """Local Speech-to-Text engine with silence detection and energy VAD."""
+
+    def __init__(self, config: Config):
+        """Initialize STT engine with configuration.
+
+        Args:
+            config (Config): Central configuration object.
+        """
+        self.config = config
+        self.model_path = Path(config.get("voice.stt.model_path"))
+        self.samplerate = config.get("voice.stt.samplerate", 16000)
+        self.device_index = config.get("voice.stt.device_index")
+        self.energy_threshold = config.get("voice.stt.energy_threshold", 300)
+        
         self._model: Optional[vosk.Model] = None
         self._recognizer: Optional[vosk.KaldiRecognizer] = None
-        self._q = queue.Queue()
-        self.samplerate = 16000 # Standard for many STT models
+        self._audio_event = asyncio.Event()
 
-    def _initialize_model(self) -> bool:
+    def _initialize_model(self) -> None:
         """Load Vosk model if not already loaded."""
         if self._model:
-            return True
-        
+            return
+
         if not vosk:
-            logger.error("Vosk not installed. Run 'pip install vosk'.")
-            return False
-            
-        if not self.model_path or not Path(self.model_path).exists():
-            logger.error(f"STT model not found at {self.model_path}. Please download it first.")
-            return False
-            
+            raise ImportError("Vosk not installed. Run 'pip install vosk'.")
+
+        if not self.model_path.exists():
+            raise ModelNotFoundError(
+                model_name="Vosk STT",
+                model_path=str(self.model_path),
+                download_hint="Run 'friday voice download' to fetch the STT model."
+            )
+
         try:
-            self._model = vosk.Model(self.model_path)
+            self._model = vosk.Model(str(self.model_path))
             self._recognizer = vosk.KaldiRecognizer(self._model, self.samplerate)
-            return True
         except Exception as e:
             logger.error(f"Failed to load Vosk model: {e}")
-            return False
+            raise
 
-    def _audio_callback(self, in_data, frame_count, time_info, status):
-        """Put audio data into the queue."""
-        self._q.put(bytes(in_data))
-        return (None, pyaudio.paContinue)
-
-    async def listen(self, timeout: int = 10, silence_limit: int = 2) -> Optional[str]:
-        """Listen from microphone and return transcribed text."""
-        if not self._initialize_model():
-            return None
+    @classmethod
+    def list_microphones(cls) -> List[Dict[str, any]]:
+        """List available microphone devices."""
+        if not pyaudio:
+            return []
         
+        p = pyaudio.PyAudio()
+        info = []
+        try:
+            for i in range(p.get_device_count()):
+                dev = p.get_device_info_by_index(i)
+                if dev.get('maxInputChannels') > 0:
+                    info.append({
+                        'index': i,
+                        'name': dev.get('name'),
+                        'rate': int(dev.get('defaultSampleRate'))
+                    })
+        finally:
+            p.terminate()
+        return info
+
+    def _is_speech(self, audio_data: bytes) -> bool:
+        """Simple energy-based Voice Activity Detection (VAD)."""
+        if not audio_data:
+            return False
+        # Convert bytes to int16 array
+        audio_np = np.frombuffer(audio_data, dtype=np.int16)
+        energy = np.sqrt(np.mean(audio_np**2))
+        return energy > self.energy_threshold
+
+    async def listen(
+        self, 
+        timeout: Optional[int] = None, 
+        silence_limit: Optional[int] = None
+    ) -> Optional[str]:
+        """Listen from microphone and return transcribed text.
+
+        Args:
+            timeout (int, optional): Overall listening timeout in seconds.
+            silence_limit (int, optional): Seconds of silence before stopping.
+
+        Returns:
+            Optional[str]: Transcribed text or None.
+        """
+        self._initialize_model()
+        
+        timeout = timeout or self.config.get("voice.stt.timeout", 10)
+        silence_limit = silence_limit or self.config.get("voice.stt.silence_limit", 2)
+
         if not pyaudio:
             logger.error("PyAudio not installed. Run 'pip install pyaudio'.")
             return None
 
         p = pyaudio.PyAudio()
+        stream = None
         try:
             stream = p.open(
                 format=pyaudio.paInt16,
                 channels=1,
                 rate=self.samplerate,
                 input=True,
-                frames_per_buffer=8000,
-                stream_callback=self._audio_callback
+                input_device_index=self.device_index,
+                frames_per_buffer=8000
             )
-            
+
             logger.info("Listening...")
-            stream.start_stream()
-            
             full_text = ""
             last_speech_time = asyncio.get_event_loop().time()
             start_time = last_speech_time
             
-            while stream.is_active():
-                await asyncio.sleep(0.1)
+            # Use non-blocking read in a loop
+            while True:
+                # 1. Read audio data (non-blocking if possible)
+                if stream.get_read_available() > 0:
+                    data = stream.read(4000, exception_on_overflow=False)
+                    
+                    if self._is_speech(data):
+                        last_speech_time = asyncio.get_event_loop().time()
+                        
+                        if self._recognizer.AcceptWaveform(data):
+                            result = json.loads(self._recognizer.Result())
+                            text = result.get("text", "").strip()
+                            if text:
+                                full_text += " " + text
+                        else:
+                            # Partial results can be ignored unless we want real-time display
+                            pass
                 
-                # Check for overall timeout
-                if asyncio.get_event_loop().time() - start_time > timeout:
-                    logger.info("STT timeout reached.")
+                # 2. Check timeouts
+                now = asyncio.get_event_loop().time()
+                
+                if now - start_time > timeout:
+                    logger.info("STT overall timeout reached.")
+                    break
+                    
+                if full_text and (now - last_speech_time > silence_limit):
+                    logger.info("Silence detected. Stopping.")
                     break
                 
-                # Check for silence timeout
-                if asyncio.get_event_loop().time() - last_speech_time > silence_limit and full_text:
-                    logger.info("Silence detected. Stopping recording.")
-                    break
-                
-                # Process audio queue
-                while not self._q.empty():
-                    data = self._q.get()
-                    if self._recognizer.AcceptWaveform(data):
-                        result = json.loads(self._recognizer.Result())
-                        text = result.get("text", "").strip()
-                        if text:
-                            full_text += " " + text
-                            last_speech_time = asyncio.get_event_loop().time()
-                    else:
-                        partial = json.loads(self._recognizer.PartialResult())
-                        if partial.get("partial", "").strip():
-                            last_speech_time = asyncio.get_event_loop().time()
+                await asyncio.sleep(0.01) # Yield to event loop
 
-            stream.stop_stream()
-            stream.close()
-            
             # Get final result
             final_res = json.loads(self._recognizer.FinalResult())
             full_text += " " + final_res.get("text", "").strip()
             
-            return full_text.strip()
-            
+            transcription = full_text.strip()
+            if transcription:
+                logger.info(f"Transcribed: {transcription}")
+            return transcription or None
+
         except Exception as e:
             logger.error(f"STT Error: {e}")
             return None
         finally:
+            if stream:
+                stream.stop_stream()
+                stream.close()
             p.terminate()

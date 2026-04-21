@@ -1,33 +1,36 @@
-"""Custom exception hierarchy for the FRIDAY framework."""
+"""Custom exceptions for the Friday project."""
+
+from typing import Optional
+
 
 class FridayError(Exception):
-    """Base exception for all FRIDAY errors."""
+    """Base exception for all Friday errors."""
+
+    def __init__(self, message: str, original_exception: Optional[Exception] = None):
+        super().__init__(message)
+        self.original_exception = original_exception
+
+
+class ModelNotFoundError(FridayError):
+    """Raised when an AI model (TTS, STT, LLM) is missing."""
+
+    def __init__(self, model_name: str, model_path: str, download_hint: Optional[str] = None):
+        message = f"Model '{model_name}' not found at {model_path}."
+        if download_hint:
+            message += f" {download_hint}"
+        super().__init__(message)
+
+
+class SandboxError(FridayError):
+    """Raised when code execution in the sandbox fails."""
     pass
 
-class HardwareError(FridayError):
-    """Raised when hardware detection or requirement check fails."""
+
+class AudioDeviceError(FridayError):
+    """Raised when an audio input/output device is unavailable."""
     pass
 
-class ConfigError(FridayError):
-    """Raised when configuration is invalid or missing."""
-    pass
 
-class LLMError(FridayError):
-    """Raised when LLM engine operations fail."""
-    pass
-
-class MemoryError(FridayError):
-    """Raised when vector store or conversation history operations fail."""
-    pass
-
-class SkillError(FridayError):
-    """Raised when a skill fails to load or execute."""
-    pass
-
-class AgentError(FridayError):
-    """Raised when agent execution fails."""
-    pass
-
-class SecurityError(FridayError):
-    """Raised when a security boundary is violated."""
+class ConfigurationError(FridayError):
+    """Raised when there is an error in the configuration."""
     pass
