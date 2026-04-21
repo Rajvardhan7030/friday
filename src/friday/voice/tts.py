@@ -29,12 +29,28 @@ class TTSEngine:
         self.piper_path = config.get("voice.tts.piper_path")
 
     def _validate_model(self) -> None:
-        """Ensure the voice model exists on disk."""
+        """Ensure the voice model and its JSON config exist and are valid."""
+        import json
+        config_path = self.model_path.with_suffix(".onnx.json")
+        
+        missing = []
         if not self.model_path.exists():
+            missing.append(f"Model ({self.model_path.name})")
+        
+        if not config_path.exists():
+            missing.append(f"Config ({config_path.name})")
+        else:
+            try:
+                with open(config_path, "r") as f:
+                    json.load(f)
+            except (json.JSONDecodeError, OSError):
+                missing.append(f"Invalid Config ({config_path.name})")
+            
+        if missing:
             raise ModelNotFoundError(
                 model_name=self.voice_model,
-                model_path=str(self.model_path),
-                download_hint="Run 'friday voice download' to fetch missing models."
+                model_path=", ".join(missing),
+                download_hint="Run 'friday voice download' to fetch or repair models."
             )
 
     async def speak(self, text: str, block: bool = True) -> None:
@@ -48,7 +64,6 @@ class TTSEngine:
             self._validate_model()
         except ModelNotFoundError as e:
             logger.error(e)
-            print(f"\n[TTS MISSING] {text}\n")
             return
 
         output_file = None
@@ -78,13 +93,11 @@ class TTSEngine:
                 if process.returncode != 0:
                     error_msg = stderr.decode().strip()
                     logger.error(f"Piper failed (code {process.returncode}): {error_msg}")
-                    print(f"\n{text}\n")
                     return
 
             except asyncio.TimeoutExpired:
                 process.kill()
                 logger.error("Piper synthesis timed out.")
-                print(f"\n{text}\n")
                 return
 
             if output_file.exists():

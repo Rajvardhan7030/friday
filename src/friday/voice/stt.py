@@ -1,9 +1,12 @@
 """Local Speech-to-Text using Vosk and PyAudio."""
 
+import sys
 import json
 import logging
 import asyncio
 import numpy as np
+import os
+import contextlib
 from pathlib import Path
 from typing import Optional, List, Dict
 
@@ -18,6 +21,25 @@ from ..core.config import Config
 from ..core.exceptions import ModelNotFoundError, AudioDeviceError
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def ignore_stderr():
+    """Context manager to silence stderr (for noisy C libraries like PortAudio)."""
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        old_stderr = os.dup(2)
+        sys.stderr.flush()
+        os.dup2(devnull, 2)
+        os.close(devnull)
+        try:
+            yield
+        finally:
+            os.dup2(old_stderr, 2)
+            os.close(old_stderr)
+    except OSError:
+        # Fallback if dup/dup2 not available
+        yield
 
 
 class STTEngine:
@@ -114,7 +136,9 @@ class STTEngine:
             logger.error("PyAudio not installed. Run 'pip install pyaudio'.")
             return None
 
-        p = pyaudio.PyAudio()
+        with ignore_stderr():
+            p = pyaudio.PyAudio()
+        
         stream = None
         try:
             stream = p.open(
