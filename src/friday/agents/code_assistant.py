@@ -12,6 +12,22 @@ from ..utils.security import run_sandboxed_code
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_workspace_dir(
+    session: Session,
+    task_description: str,
+    config: Optional[Config] = None,
+) -> Path:
+    """Choose the workspace directory for code generation tasks."""
+    configured_base_dir = Path(getattr(config, "base_dir", Config.DEFAULT_BASE_DIR))
+    workspace_dir = configured_base_dir / "workspace"
+
+    previous_message = session.history[-1]["content"].lower() if session.history else ""
+    if "desktop" in task_description.lower() or "desktop" in previous_message:
+        return Path.home() / "Desktop"
+
+    return workspace_dir
+
 @registry.register(
     name="Code Task",
     regex=r"(?:create|write|run|execute|make|generate) (?:a )?(?:file|code|script|program) (.+)",
@@ -27,15 +43,7 @@ async def code_task_handler(session: Session, task_description: str, llm: Option
     if not llm:
         return "Internal Error: LLM engine not available for coding tasks."
     
-    # Resolve workspace directory
-    workspace_dir = Path.home() / "Desktop"
-    if config:
-        workspace_dir = Path(getattr(config, "base_dir", Path.home() / ".friday")) / "workspace"
-    
-    # If the user explicitly mentions 'desktop', use that
-    previous_message = session.history[-1]["content"].lower() if session.history else ""
-    if "desktop" in task_description.lower() or "desktop" in previous_message:
-        workspace_dir = Path.home() / "Desktop"
+    workspace_dir = _resolve_workspace_dir(session, task_description, config)
 
     logger.info(f"Handling code task: {task_description}")
     

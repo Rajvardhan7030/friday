@@ -28,7 +28,6 @@ class LocalEngine(LLMEngine):
         self.base_url = base_url
         self._client = ollama.AsyncClient(host=base_url)
         self._current_model = primary_model
-        self._in_fallback = False
 
     @property
     def model_name(self) -> str:
@@ -41,65 +40,41 @@ class LocalEngine(LLMEngine):
         stream: bool = False
     ) -> LLMResponse:
         """Send chat completion to local Ollama."""
-        try:
-            # Convert Message objects to dicts for Ollama
-            formatted_messages = []
-            for m in messages:
-                if hasattr(m, "model_dump"):
-                    formatted_messages.append(m.model_dump())
-                elif isinstance(m, dict):
-                    formatted_messages.append(m)
-                else:
-                    raise ValueError(f"Invalid message type: {type(m)}")
-            
-            response = await self._client.chat(
-                model=self._current_model,
-                messages=formatted_messages,
-                tools=tools,
-                stream=stream
-            )
-            
-            content = response.get('message', {}).get('content', "")
-            # Reset fallback flag on success
-            self._in_fallback = False
-            
-            return LLMResponse(
-                content=content,
-                raw_response=response,
-                usage={}
-            )
-        except Exception as e:
-            error_msg = str(e)
-            if "not found" in error_msg.lower() or "404" in error_msg:
-                logger.warning(f"Model '{self._current_model}' not found in Ollama.")
-                
-                if not self._in_fallback:
-                    if self._current_model == self._primary_model:
-                        logger.info(f"Attempting fallback to {self._fallback_model}")
-                        self._current_model = self._fallback_model
-                        return await self.chat(messages, tools, stream)
-                    else:
-                        # Final attempt: use ANY available model
-                        self._in_fallback = True
-                        available = await self.get_available_models()
-                        if available:
-                            # Filter out the models we already tried
-                            others = [m for m in available if m not in [self._primary_model, self._fallback_model]]
-                            last_resort = others[0] if others else available[0]
-                            logger.info(f"Using available model '{last_resort}' as last resort.")
-                            self._current_model = last_resort
-                            return await self.chat(messages, tools, stream)
+        formatted_messages = self._format_messages(messages)
+        tried_models: List[str] = []
 
-            logger.error(f"Ollama chat error with {self._current_model}: {e}")
-            # Reset fallback flag for future queries if it failed
-            self._in_fallback = False
-            
-            if "not found" in error_msg.lower() or "404" in error_msg:
-                raise LLMError(
-                    f"Model '{self._current_model}' not found. "
-                    f"Please run 'ollama pull {self._current_model}' to install it."
-                )
-            raise LLMError(f"Local LLM engine failed: {e}")
+        try:
+            for model in self._model_attempt_order():
+                try:
+                    return await self._chat_with_model(model, formatted_messages, tools, stream)
+                except Exception as e:
+                    if not self._is_model_not_found_error(e):
+                        logger.error(f"Ollama chat error with {model}: {e}")
+                        raise LLMError(f"Local LLM engine failed: {e}") from e
+
+                    logger.warning(f"Model '{model}' not found in Ollama.")
+                    tried_models.append(model)
+
+            available = await self.get_available_models()
+            last_resort_models = [m for m in available if m not in tried_models]
+            for model in last_resort_models:
+                logger.info(f"Using available model '{model}' as last resort.")
+                try:
+                    return await self._chat_with_model(model, formatted_messages, tools, stream)
+                except Exception as e:
+                    if not self._is_model_not_found_error(e):
+                        logger.error(f"Ollama chat error with {model}: {e}")
+                        raise LLMError(f"Local LLM engine failed: {e}") from e
+                    logger.warning(f"Last-resort model '{model}' not found in Ollama.")
+                    tried_models.append(model)
+
+            missing = tried_models or [self._primary_model]
+            raise LLMError(
+                f"Model '{missing[-1]}' not found. "
+                f"Please run 'ollama pull {missing[-1]}' to install it."
+            )
+        except LLMError:
+            raise
 
     async def get_available_models(self) -> List[str]:
         """List models available in the local Ollama instance."""
@@ -128,32 +103,86 @@ class LocalEngine(LLMEngine):
 
     async def embed(self, text: str) -> List[float]:
         """Generate local embeddings."""
-        try:
-            response = await self._client.embeddings(
-                model=self._current_model,
-                prompt=text
-            )
-            return response.get('embedding', [])
-        except Exception as e:
-            error_msg = str(e)
-            if "not found" in error_msg.lower() or "404" in error_msg:
-                logger.warning(f"Model '{self._current_model}' not found for embeddings.")
-                
-                # Try to find any available model
-                available = await self.get_available_models()
-                if available:
-                    last_resort = available[0]
-                    logger.info(f"Using '{last_resort}' for embeddings instead.")
-                    self._current_model = last_resort
-                    return await self.embed(text)
+        tried_models: List[str] = []
 
-            logger.error(f"Ollama embedding error: {e}")
-            if "not found" in error_msg.lower() or "404" in error_msg:
-                raise LLMError(
-                    f"Model '{self._current_model}' not found. "
-                    f"Please run 'ollama pull {self._current_model}' to install it."
-                )
-            raise LLMError(f"Failed to generate embeddings: {e}")
+        try:
+            for model in self._model_attempt_order():
+                try:
+                    return await self._embed_with_model(model, text)
+                except Exception as e:
+                    if not self._is_model_not_found_error(e):
+                        logger.error(f"Ollama embedding error with {model}: {e}")
+                        raise LLMError(f"Failed to generate embeddings: {e}") from e
+
+                    logger.warning(f"Model '{model}' not found for embeddings.")
+                    tried_models.append(model)
+
+            available = await self.get_available_models()
+            last_resort_models = [m for m in available if m not in tried_models]
+            for model in last_resort_models:
+                logger.info(f"Using '{model}' for embeddings instead.")
+                try:
+                    return await self._embed_with_model(model, text)
+                except Exception as e:
+                    if not self._is_model_not_found_error(e):
+                        logger.error(f"Ollama embedding error with {model}: {e}")
+                        raise LLMError(f"Failed to generate embeddings: {e}") from e
+                    logger.warning(f"Last-resort embedding model '{model}' not found in Ollama.")
+                    tried_models.append(model)
+
+            missing = tried_models or [self._primary_model]
+            raise LLMError(
+                f"Model '{missing[-1]}' not found. "
+                f"Please run 'ollama pull {missing[-1]}' to install it."
+            )
+        except LLMError:
+            raise
+
+    def _format_messages(self, messages: List[Message]) -> List[Dict[str, Any]]:
+        """Convert Message objects to the format expected by Ollama."""
+        formatted_messages = []
+        for message in messages:
+            if hasattr(message, "model_dump"):
+                formatted_messages.append(message.model_dump())
+            elif isinstance(message, dict):
+                formatted_messages.append(message)
+            else:
+                raise ValueError(f"Invalid message type: {type(message)}")
+        return formatted_messages
+
+    def _model_attempt_order(self) -> List[str]:
+        """Return the preferred model order for a fresh request."""
+        models = [self._primary_model]
+        if self._fallback_model and self._fallback_model != self._primary_model:
+            models.append(self._fallback_model)
+        return models
+
+    @staticmethod
+    def _is_model_not_found_error(error: Exception) -> bool:
+        error_msg = str(error).lower()
+        return "not found" in error_msg or "404" in error_msg
+
+    async def _chat_with_model(
+        self,
+        model: str,
+        formatted_messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+        stream: bool,
+    ) -> LLMResponse:
+        response = await self._client.chat(
+            model=model,
+            messages=formatted_messages,
+            tools=tools,
+            stream=stream
+        )
+        self._current_model = model
+        content = response.get('message', {}).get('content', "")
+        return LLMResponse(content=content, raw_response=response, usage={})
+
+    async def _embed_with_model(self, model: str, text: str) -> List[float]:
+        response = await self._client.embeddings(model=model, prompt=text)
+        self._current_model = model
+        return response.get('embedding', [])
 
     async def is_available_async(self) -> bool:
         """Non-blocking health check."""

@@ -3,13 +3,20 @@
 import logging
 import asyncio
 import time
+import warnings
 from typing import Dict, Any
 from .base import BaseSkill, SkillResult
 
 try:
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
+    USING_LEGACY_DDGS = False
 except ImportError:
-    DDGS = None
+    try:
+        from duckduckgo_search import DDGS
+        USING_LEGACY_DDGS = True
+    except ImportError:
+        DDGS = None
+        USING_LEGACY_DDGS = False
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +26,7 @@ class WebSearchSkill(BaseSkill):
     def __init__(self):
         self._cache: Dict[str, Any] = {}
         self._last_search_time: float = 0.0
+        self._rate_limit_lock = asyncio.Lock()
 
     @property
     def name(self) -> str:
@@ -38,21 +46,10 @@ class WebSearchSkill(BaseSkill):
             logger.debug(f"Cache hit for web search: {query}")
             return SkillResult(success=True, data=self._cache[query])
 
-        # 2. Rate limit: wait at least 1s between searches
-        now = time.time()
-        elapsed = now - self._last_search_time
-        if elapsed < 1.0:
-            await asyncio.sleep(1.0 - elapsed)
+        await self._acquire_search_slot()
 
         try:
-            results = []
-            with DDGS() as ddgs:
-                ddgs_gen = ddgs.text(query, max_results=5)
-                if ddgs_gen:
-                    for r in ddgs_gen:
-                        results.append(r)
-
-            self._last_search_time = time.time()
+            results = await asyncio.to_thread(self._search, query)
 
             if not results:
                 return SkillResult(success=False, data=[], message="No results found.")
@@ -63,3 +60,35 @@ class WebSearchSkill(BaseSkill):
         except Exception as e:
             logger.error(f"Web search failed: {e}")
             return SkillResult(success=False, data=[], message=str(e))
+
+    async def _acquire_search_slot(self) -> None:
+        """Reserve the next allowed search slot to enforce global spacing."""
+        async with self._rate_limit_lock:
+            now = time.monotonic()
+            elapsed = now - self._last_search_time
+            if elapsed < 1.0:
+                await asyncio.sleep(1.0 - elapsed)
+                now = time.monotonic()
+
+            self._last_search_time = now
+
+    @staticmethod
+    def _search(query: str) -> list[Dict[str, Any]]:
+        """Run the synchronous DDGS search call off the event loop."""
+        results = []
+        if USING_LEGACY_DDGS:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                with DDGS() as ddgs:
+                    ddgs_gen = ddgs.text(query, max_results=5)
+                    if ddgs_gen:
+                        for result in ddgs_gen:
+                            results.append(result)
+            return results
+
+        with DDGS() as ddgs:
+            ddgs_gen = ddgs.text(query, max_results=5)
+            if ddgs_gen:
+                for result in ddgs_gen:
+                    results.append(result)
+        return results

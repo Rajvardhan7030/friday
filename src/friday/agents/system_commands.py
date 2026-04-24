@@ -15,7 +15,7 @@ async def help_handler(session: Session, **_kwargs):
 
 @registry.register(
     name="Greeting",
-    regex=r"\b(?:hi+|hello+|hey+|greetings|morning|evening)\b",
+    regex=r"^(?:hi+|hello+|hey+|greetings|good (?:morning|evening)|morning|evening)(?:\s+friday)?[!.?]*$",
     description="Respond to greetings",
     usage="hello"
 )
@@ -25,7 +25,7 @@ async def greeting_handler(session: Session, **_kwargs):
 
 @registry.register(
     name="Identity",
-    regex=r"who (?:are|r) (?:you|u)\??|your name",
+    regex=r"^(?:who (?:are|r) (?:you|u)|what(?:'s| is) your name|your name)[?.!]*$",
     description="Ask about Friday's identity",
     usage="who are you?",
     priority=10

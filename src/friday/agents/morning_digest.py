@@ -4,12 +4,44 @@ import logging
 from typing import Dict, List
 from .base import BaseAgent, Context, AgentResult
 from ..llm.engine import LLMEngine, Message
+from ..core.registry import registry
+from ..core.agent_runner import Session
+from ..core.config import Config
 from ..skills.email_skill import EmailSkill
 from ..skills.calendar_skill import CalendarSkill
 from ..skills.news_skill import NewsSkill
 from ..voice.tts import TTSEngine
 
 logger = logging.getLogger(__name__)
+
+
+@registry.register(
+    name="Morning Digest",
+    regex=r"^(?:morning digest|daily briefing|start (?:the )?morning digest|give me (?:my )?morning digest)$",
+    description="Generate and read out your morning briefing",
+    usage="morning digest",
+    priority=8
+)
+async def morning_digest_handler(
+    session: Session,
+    llm: LLMEngine | None = None,
+    config: Config | None = None,
+    **_kwargs,
+):
+    """Entry point to run the morning digest from the command registry."""
+    if llm is None:
+        return "Internal Error: LLM engine not available for the morning digest."
+    if config is None:
+        return "Internal Error: Configuration not available for the morning digest."
+
+    agent = MorningDigestAgent(llm, TTSEngine(config))
+    result = await agent.run(
+        Context(
+            user_query="morning digest",
+            chat_history=session.history,
+        )
+    )
+    return result.content
 
 class MorningDigestAgent(BaseAgent):
     """Gathers emails, calendar, and news for a morning briefing."""

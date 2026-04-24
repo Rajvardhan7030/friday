@@ -69,15 +69,17 @@ def run_sandboxed_code(
                     "python:3.11-slim",
                     "python", f"/workspace/{script_path.name}"
                 ]
-            elif backend == "unshare" and shutil.which("unshare"):
-                # unshare -n: run in new network namespace (requires sudo or specific caps)
-                # We try it, and if it fails (PermissionError), we fall back.
-                test_cmd = ["unshare", "-n", "true"]
-                try:
-                    subprocess.run(test_cmd, check=True, capture_output=True)
-                    cmd = ["unshare", "-n"] + cmd
-                except (subprocess.CalledProcessError, PermissionError):
-                    logger.warning("Unshare failed (no permission). Running without network isolation.")
+            elif backend == "docker":
+                return False, (
+                    "Error: Docker sandbox requested but Docker is not available. "
+                    "Install Docker or change 'security.sandbox_backend'."
+                )
+            elif backend == "unshare":
+                isolation_error = _validate_unshare_support()
+                if isolation_error:
+                    logger.error(isolation_error)
+                    return False, isolation_error
+                cmd = ["unshare", "-n"] + cmd
 
         # Execution flags
         kwargs: Dict[str, Any] = {
@@ -124,6 +126,25 @@ def run_sandboxed_code(
                 script_path.unlink()
             except Exception as e:
                 logger.warning(f"Failed to cleanup script {script_path}: {e}")
+
+
+def _validate_unshare_support() -> Optional[str]:
+    """Return an error message if unshare-based isolation cannot be used."""
+    if not shutil.which("unshare"):
+        return (
+            "Error: Network-isolated sandbox requested but 'unshare' is not installed. "
+            "Install it or change 'security.sandbox_backend'."
+        )
+
+    try:
+        subprocess.run(["unshare", "-n", "true"], check=True, capture_output=True)
+    except (subprocess.CalledProcessError, PermissionError) as exc:
+        return (
+            "Error: Network-isolated sandbox requested but 'unshare -n' is not permitted "
+            f"on this system: {exc}. Adjust permissions or choose a different sandbox backend."
+        )
+
+    return None
 
 
 def _kill_process_tree(pid: int) -> None:

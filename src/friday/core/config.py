@@ -59,6 +59,9 @@ class Config:
                 "sandbox_timeout": 30,
                 "sandbox_backend": "unshare",  # or 'docker', 'none'
             },
+            "session": {
+                "max_history_messages": 100,
+            },
             "llm": {
                 "engine": "ollama",
                 "primary_model": "mistral:latest",

@@ -14,16 +14,16 @@ logger = logging.getLogger(__name__)
 
 class Session:
 # ... (rest of Session class stays same)
-    def __init__(self):
+    def __init__(self, max_history_messages: int = 100):
         self.history: List[Dict[str, str]] = []
         self.last_action: Optional[str] = None
         self.variables: Dict[str, Any] = {}
+        self.max_history_messages = max_history_messages
 
     def add_message(self, role: str, content: str):
         """Add a message to the session history."""
         self.history.append({"role": role, "content": content})
-        # Keep history manageable (e.g., last 20 messages)
-        if len(self.history) > 20:
+        if len(self.history) > self.max_history_messages:
             self.history.pop(0)
 
 class AgentRunner:
@@ -31,7 +31,9 @@ class AgentRunner:
 
     def __init__(self, config: Config):
         self.config = config
-        self.session = Session()
+        self.session = Session(
+            max_history_messages=config.get("session.max_history_messages", 100)
+        )
 
         try:
             self.llm = LocalEngine(
@@ -50,6 +52,7 @@ class AgentRunner:
         try:
             from ..agents import system_commands
             from ..agents import code_assistant
+            from ..agents import morning_digest
             # The code_assistant will register itself for task-based intents
         except ImportError as e:
             logger.warning(f"Could not load some agents: {e}")
