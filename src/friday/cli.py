@@ -4,6 +4,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
+from typing import List, Optional
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 class FridayCLI:
     """The CLI interface and main event loop for Friday."""
 
-    def __init__(self):
+    def __init__(self, voice_output_enabled: bool = False):
         self.config = Config()
         setup_logging(Path(self.config.get("logging.file")))
         
@@ -29,12 +30,26 @@ class FridayCLI:
         self.tts = TTSEngine(self.config)
         self.stt = STTEngine(self.config)
         self.voice_mode = False
+        self.voice_output_enabled = voice_output_enabled
+
+    @staticmethod
+    def parse_control_command(user_input: str) -> Optional[str]:
+        """Return a normalized interactive control command, if present."""
+        normalized = " ".join(user_input.strip().split()).lower()
+        command_map = {
+            "/exit": "exit",
+            "/quit": "exit",
+            "/bye": "exit",
+            "/voice on": "voice_on",
+            "/voice off": "voice_off",
+        }
+        return command_map.get(normalized)
 
     async def run(self):
         """Run the main interactive loop."""
         console.print(Panel(
             "[bold green]FRIDAY SYSTEM ONLINE[/bold green]\n"
-            "[dim]Type 'help' for commands, 'voice on/off' to toggle, or 'exit' to quit.[/dim]",
+            "[dim]Type 'help' for agent commands, '/voice on' to enable the mic, or '/exit' to quit.[/dim]",
             title="Friday v0.2",
             subtitle="Local AI Assistant"
         ))
@@ -54,17 +69,21 @@ class FridayCLI:
                 if not user_input:
                     continue
 
-                if user_input.lower() in ["exit", "quit", "bye"]:
+                control_command = self.parse_control_command(user_input)
+
+                if control_command == "exit":
                     await self.speak("Goodbye!")
                     break
 
-                if user_input.lower() == "voice on":
+                if control_command == "voice_on":
                     self.voice_mode = True
+                    self.voice_output_enabled = True
                     await self.speak("Voice mode enabled.")
                     continue
-                elif user_input.lower() == "voice off":
+                if control_command == "voice_off":
                     self.voice_mode = False
-                    await self.speak("Voice mode disabled.")
+                    self.voice_output_enabled = False
+                    console.print("[bold green]Friday:[/bold green] Voice mode disabled.\n")
                     continue
 
                 # Process through the Runner
@@ -86,6 +105,9 @@ class FridayCLI:
 
     async def speak(self, text: str):
         """Handle both console and optional voice output."""
+        if not self.voice_output_enabled:
+            return
+
         import re
         # Clean text for TTS (remove all rich tags [tag]...[/tag] or [tag])
         clean_text = re.sub(r"\[.*?\]", "", text)
@@ -95,6 +117,20 @@ class FridayCLI:
         except Exception:
             # Silent failure since text is already on screen
             pass
+
+
+def extract_voice_output_flag(args: List[str]) -> tuple[bool, List[str]]:
+    """Split voice-output flags from the remaining CLI args."""
+    remaining_args: List[str] = []
+    voice_output_enabled = False
+
+    for arg in args:
+        if arg.lower() in {"-v", "--voice-output"}:
+            voice_output_enabled = True
+        else:
+            remaining_args.append(arg)
+
+    return voice_output_enabled, remaining_args
 
 
 async def voice_download():
@@ -145,7 +181,41 @@ async def voice_download():
     except KeyboardInterrupt:
         console.print("\n[yellow]Download interrupted by user.[/yellow]")
 
+async def friday_config(args: List[str]):
+    """Manage Friday configuration."""
+    config = Config()
+    
+    if not args or args[0] == "list":
+        from rich.table import Table
+        table = Table(title="Friday Configuration")
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
+        
+        def add_rows(data, prefix=""):
+            for k, v in data.items():
+                key = f"{prefix}{k}"
+                if isinstance(v, dict):
+                    add_rows(v, f"{key}.")
+                else:
+                    table.add_row(key, str(v))
+        
+        add_rows(config.get_all())
+        console.print(table)
+        
+    elif args[0] == "set" and len(args) >= 3:
+        key, value = args[1], args[2]
+        try:
+            config.set(key, value)
+            console.print(f"[bold green]Updated {key} to {value}[/bold green]")
+        except Exception as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+    else:
+        console.print("[yellow]Usage:[/yellow]")
+        console.print("  friday config list")
+        console.print("  friday config set <key> <value>")
+
 async def friday_doctor():
+# ... (rest of the file)
     """Perform a system health check."""
     config = Config()
     console.print(Panel("[bold blue]FRIDAY System Doctor[/bold blue]", expand=False))
@@ -189,17 +259,37 @@ async def friday_doctor():
     except Exception as e:
         console.print(f"• Audio Input: [red]ERROR[/red] ({e})")
 
-async def main():
+async def main(voice_output_enabled: bool = False):
     """Main interactive loop."""
-    cli = FridayCLI()
+    cli = FridayCLI(voice_output_enabled=voice_output_enabled)
     await cli.run()
+
+
+async def ask_mode(args: List[str], voice_output_enabled: bool = False):
+    """Run a single-prompt ask flow."""
+    cli = FridayCLI(voice_output_enabled=voice_output_enabled)
+    console.print(Panel(
+        "[bold cyan]FRIDAY ASK MODE[/bold cyan]\n"
+        "[dim]Ask one question and get a single response. Add -v to hear the answer.[/dim]",
+        title="Friday Ask",
+        subtitle="One-shot prompt"
+    ))
+
+    prompt = " ".join(args).strip() if args else Prompt.ask("[bold blue]Ask[/bold blue]").strip()
+    if not prompt:
+        console.print("[bold yellow]No question provided.[/bold yellow]")
+        return
+
+    response = await cli.runner.handle_input(prompt)
+    console.print(f"\n[bold green]Friday:[/bold green] {response}\n")
+    await cli.speak(response)
 
 def app():
     """Entry point for the friday CLI as defined in pyproject.toml."""
-    # Better arg matching
-    args = [a.lower() for a in sys.argv[1:]]
+    voice_output_enabled, raw_args = extract_voice_output_flag(sys.argv[1:])
+    normalized_args = [arg.lower() for arg in raw_args]
     
-    if "voice" in args and "download" in args:
+    if normalized_args[:2] == ["voice", "download"]:
         try:
             asyncio.run(voice_download())
             return
@@ -207,7 +297,7 @@ def app():
             print(f"Download task failed: {e}")
             sys.exit(1)
 
-    if "doctor" in args:
+    if normalized_args[:1] == ["doctor"]:
         try:
             asyncio.run(friday_doctor())
             return
@@ -215,8 +305,25 @@ def app():
             print(f"Doctor failed: {e}")
             sys.exit(1)
     
+    if normalized_args[:1] == ["ask"]:
+        try:
+            asyncio.run(ask_mode(raw_args[1:], voice_output_enabled=voice_output_enabled))
+            return
+        except Exception as e:
+            print(f"Ask command failed: {e}")
+            sys.exit(1)
+
+    if normalized_args[:1] == ["config"]:
+        # Preserve original argument casing for values like file paths or model names.
+        try:
+            asyncio.run(friday_config(raw_args[1:]))
+            return
+        except Exception as e:
+            print(f"Config command failed: {e}")
+            sys.exit(1)
+    
     try:
-        asyncio.run(main())
+        asyncio.run(main(voice_output_enabled=voice_output_enabled))
     except KeyboardInterrupt:
         pass
     except Exception as e:

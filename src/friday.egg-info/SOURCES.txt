@@ -1,7 +1,7 @@
 README.md
 pyproject.toml
-src/__init__.py
 src/friday/__init__.py
+src/friday/__main__.py
 src/friday/cli.py
 src/friday.egg-info/PKG-INFO
 src/friday.egg-info/SOURCES.txt
@@ -14,6 +14,7 @@ src/friday/agents/base.py
 src/friday/agents/code_assistant.py
 src/friday/agents/morning_digest.py
 src/friday/agents/research.py
+src/friday/agents/system_commands.py
 src/friday/core/__init__.py
 src/friday/core/agent_runner.py
 src/friday/core/config.py
@@ -40,3 +41,4 @@ src/friday/voice/__init__.py
 src/friday/voice/stt.py
 src/friday/voice/tts.py
 tests/test_agents.py
+tests/test_tts.py

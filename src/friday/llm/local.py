@@ -1,11 +1,19 @@
 """Local LLM engine integration using Ollama."""
 
 import logging
-import httpx
-import ollama
 from typing import List, Dict, Any, Optional
-from friday.llm.engine import LLMEngine, Message, LLMResponse
-from friday.core.exceptions import LLMError
+from .engine import LLMEngine, Message, LLMResponse
+from ..core.exceptions import LLMError
+
+try:
+    import httpx
+except ImportError:
+    httpx = None
+
+try:
+    import ollama
+except ImportError:
+    ollama = None
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +21,8 @@ class LocalEngine(LLMEngine):
     """Local inference engine using Ollama."""
 
     def __init__(self, primary_model: str, fallback_model: str, base_url: str="http://localhost:11434"):
+        if ollama is None:
+            raise LLMError("The 'ollama' package is not installed. Install project dependencies to use the local LLM engine.")
         self._primary_model = primary_model
         self._fallback_model = fallback_model
         self.base_url = base_url
@@ -147,6 +157,8 @@ class LocalEngine(LLMEngine):
 
     async def is_available_async(self) -> bool:
         """Non-blocking health check."""
+        if httpx is None:
+            return False
         async with httpx.AsyncClient() as client:
             try:
                 r = await client.get(f"{self.base_url}/api/tags", timeout=2.0)
@@ -156,10 +168,10 @@ class LocalEngine(LLMEngine):
 
     def is_available(self) -> bool:
         """Ping Ollama to check availability (not recommended for async paths)."""
-        # For legacy compatibility in the CLI
-        import httpx as sync_httpx
+        if httpx is None:
+            return False
         try:
-            r = sync_httpx.get(f"{self.base_url}/api/tags", timeout=2.0)
+            r = httpx.get(f"{self.base_url}/api/tags", timeout=2.0)
             return r.status_code == 200
         except Exception:
             return False

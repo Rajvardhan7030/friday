@@ -2,7 +2,7 @@
 
 import logging
 from typing import Dict, Any, List
-from friday.skills.base import BaseSkill, SkillResult
+from .base import BaseSkill, SkillResult
 
 logger = logging.getLogger(__name__)
 

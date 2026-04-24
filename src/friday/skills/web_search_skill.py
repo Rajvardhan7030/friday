@@ -1,17 +1,15 @@
 """DuckDuckGo local search integration skill."""
 
 import logging
-from typing import Dict, Any, List
-from duckduckgo_search import DDGS
-from friday.skills.base import BaseSkill, SkillResult
-
-logger = logging.getLogger(__name__)
-
-import logging
 import asyncio
-from typing import Dict, Any, List, Optional
-from duckduckgo_search import DDGS
-from friday.skills.base import BaseSkill, SkillResult
+import time
+from typing import Dict, Any
+from .base import BaseSkill, SkillResult
+
+try:
+    from duckduckgo_search import DDGS
+except ImportError:
+    DDGS = None
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +30,15 @@ class WebSearchSkill(BaseSkill):
 
     async def execute(self, query: str, context: Dict[str, Any]) -> SkillResult:
         """Execute web search query with rate limiting and caching."""
+        if DDGS is None:
+            return SkillResult(success=False, data=[], message="The 'duckduckgo-search' package is not installed.")
+
         # 1. Check cache first
         if query in self._cache:
             logger.debug(f"Cache hit for web search: {query}")
             return SkillResult(success=True, data=self._cache[query])
 
         # 2. Rate limit: wait at least 1s between searches
-        import time
         now = time.time()
         elapsed = now - self._last_search_time
         if elapsed < 1.0:

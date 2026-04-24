@@ -2,28 +2,28 @@
 
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
-from pydantic import BaseModel
-from friday.llm.engine import LLMEngine
+from pydantic import BaseModel, Field
+from ..llm.engine import LLMEngine
 
 class Context(BaseModel):
     """Execution context for agents."""
     user_query: str
-    chat_history: List[Dict[str, str]] = []
-    metadata: Dict[str, Any] = {}
+    chat_history: List[Dict[str, str]] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class AgentResult(BaseModel):
     """Result returned by an agent."""
     content: str
     success: bool = True
-    metadata: Dict[str, Any] = {}
-    citations: List[Dict[str, str]] = []
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    citations: List[Dict[str, str]] = Field(default_factory=list)
 
 class BaseAgent(ABC):
     """Abstract Base Agent all agents must implement."""
     
-    def __init__(self, llm_engine: LLMEngine, config: Dict[str, Any] = {}):
+    def __init__(self, llm_engine: LLMEngine, config: Optional[Dict[str, Any]] = None):
         self.llm = llm_engine
-        self.config = config
+        self.config = config or {}
 
     @abstractmethod
     async def run(self, ctx: Context) -> AgentResult:

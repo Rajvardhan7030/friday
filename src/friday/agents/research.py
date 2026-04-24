@@ -1,12 +1,11 @@
 """Research Agent with ReAct loop and citations."""
 
 import logging
-import json
-from typing import Dict, Any, List, Optional
-from friday.agents.base import BaseAgent, Context, AgentResult
-from friday.llm.engine import LLMEngine, Message
-from friday.skills.web_search_skill import WebSearchSkill
-from friday.memory.vector_store import VectorStore
+from typing import Dict, List
+from .base import BaseAgent, Context, AgentResult
+from ..llm.engine import LLMEngine, Message
+from ..skills.web_search_skill import WebSearchSkill
+from ..memory.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 

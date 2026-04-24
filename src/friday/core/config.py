@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class Config:
-    """Handles loading and accessing configuration from yaml."""
+    """Handles loading and accessing configuration from yaml with environment overrides."""
 
     DEFAULT_BASE_DIR = Path.home() / ".friday"
     DEFAULT_CONFIG_PATH = DEFAULT_BASE_DIR / "config.yaml"
@@ -28,6 +28,8 @@ class Config:
         else:
             self._save_default_config()
 
+        # Overwrite with environment variables (e.g., FRIDAY_LLM_PRIMARY_MODEL)
+        self._load_env_overrides()
         self._ensure_directories()
 
     def _get_default_values(self) -> Dict[str, Any]:
@@ -86,6 +88,18 @@ class Config:
         except Exception as e:
             logger.warning(f"Could not save default config to {self.config_path}: {e}")
 
+    def _load_env_overrides(self) -> None:
+        """Override config with environment variables prefixed with FRIDAY_."""
+        for key, value in os.environ.items():
+            if key.startswith("FRIDAY_"):
+                # Convert FRIDAY_VOICE_TTS_MODEL to voice.tts.model
+                config_key = key[7:].lower().replace("_", ".")
+                try:
+                    self.set(config_key, value, save=False)
+                except ConfigurationError:
+                    # Ignore env variables that don't match our schema
+                    pass
+
     def _ensure_directories(self) -> None:
         """Create necessary directories if they don't exist."""
         directories = [
@@ -115,9 +129,53 @@ class Config:
         except (KeyError, TypeError):
             return default
 
+    def set(self, key_path: str, value: Any, save: bool = True) -> None:
+        """Set a value using a dot-separated path and optionally save to disk."""
+        keys = key_path.split(".")
+        data = self._data
+        
+        # Type casting based on default values
+        current_val = self.get(key_path)
+        if current_val is not None:
+            try:
+                if isinstance(current_val, bool):
+                    if isinstance(value, str):
+                        value = value.lower() in ("true", "1", "yes")
+                elif isinstance(current_val, int):
+                    value = int(value)
+                elif isinstance(current_val, float):
+                    value = float(value)
+            except (ValueError, TypeError):
+                raise ConfigurationError(f"Invalid value for {key_path}. Expected {type(current_val).__name__}.")
+
+        # Navigate/Create nested dicts
+        for key in keys[:-1]:
+            if key not in data or not isinstance(data[key], dict):
+                data[key] = {}
+            data = data[key]
+        
+        data[keys[-1]] = value
+        
+        if save:
+            self.save()
+
+    def save(self) -> None:
+        """Persist the current configuration to the YAML file."""
+        try:
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.config_path, "w") as f:
+                yaml.dump(self._data, f, default_flow_style=False)
+            logger.info(f"Configuration saved to {self.config_path}")
+        except Exception as e:
+            raise ConfigurationError(f"Failed to save configuration: {e}")
+
+    def get_all(self) -> Dict[str, Any]:
+        """Return the entire configuration dictionary."""
+        return self._data
+
 
 def download_model(url: str, dest: Union[str, Path]) -> None:
-    """Stub for model auto-download with progress bar."""
+    """Download a file with progress bar."""
     import requests
     from tqdm import tqdm
 

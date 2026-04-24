@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .registry import registry
 from .config import Config
-from .exceptions import FridayError, ModelNotFoundError, SandboxError
+from .exceptions import ModelNotFoundError
 from ..llm.local import LocalEngine
 from ..llm.engine import Message
 
@@ -32,13 +32,16 @@ class AgentRunner:
     def __init__(self, config: Config):
         self.config = config
         self.session = Session()
-        
-        # Initialize LLM Engine
-        self.llm = LocalEngine(
-            primary_model=config.get("llm.primary_model"),
-            fallback_model=config.get("llm.fallback_model"),
-            base_url=config.get("llm.base_url")
-        )
+
+        try:
+            self.llm = LocalEngine(
+                primary_model=config.get("llm.primary_model"),
+                fallback_model=config.get("llm.fallback_model"),
+                base_url=config.get("llm.base_url")
+            )
+        except Exception as e:
+            logger.warning("LLM engine unavailable during startup: %s", e)
+            self.llm = None
         
         self._load_agents()
 
@@ -79,6 +82,8 @@ class AgentRunner:
     async def _fallback_to_llm(self, text: str) -> str:
         """Use the local LLM when no specific command is triggered."""
         logger.info("No command match. Falling back to LLM.")
+        if self.llm is None:
+            return "The local LLM engine is unavailable. Install the required dependencies and start Ollama to enable free-form chat."
         
         # Build chat history for LLM
         messages = [Message(role=m["role"], content=m["content"]) for m in self.session.history]

@@ -1,8 +1,14 @@
 """Pytest configuration and mocks."""
 
+import sys
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock
-from src.friday.llm.engine import LLMEngine, LLMResponse
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from friday.llm.engine import LLMEngine, LLMResponse
 
 @pytest.fixture
 def mock_llm():

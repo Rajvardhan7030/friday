@@ -38,13 +38,13 @@ class TTSEngine:
             missing.append(f"Model ({self.model_path.name})")
         
         if not config_path.exists():
-            missing.append(f"Config ({config_path.name})")
+            logger.warning("Piper config file %s is missing; continuing with model validation only.", config_path.name)
         else:
             try:
                 with open(config_path, "r") as f:
                     json.load(f)
             except (json.JSONDecodeError, OSError):
-                missing.append(f"Invalid Config ({config_path.name})")
+                logger.warning("Piper config file %s is unreadable or invalid JSON.", config_path.name)
             
         if missing:
             raise ModelNotFoundError(
@@ -95,7 +95,7 @@ class TTSEngine:
                     logger.error(f"Piper failed (code {process.returncode}): {error_msg}")
                     return
 
-            except asyncio.TimeoutExpired:
+            except asyncio.TimeoutError:
                 process.kill()
                 logger.error("Piper synthesis timed out.")
                 return

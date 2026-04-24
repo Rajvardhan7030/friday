@@ -2,9 +2,14 @@
 
 import logging
 from typing import List, Dict, Any, Optional
-import chromadb
-from chromadb.config import Settings
-from friday.llm.engine import LLMEngine
+from ..llm.engine import LLMEngine
+
+try:
+    import chromadb
+    from chromadb.config import Settings
+except ImportError:
+    chromadb = None
+    Settings = None
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +24,8 @@ class VectorStore:
 
     async def initialize(self) -> None:
         """Explicitly initialize the ChromaDB client and collection."""
+        if chromadb is None or Settings is None:
+            raise RuntimeError("The 'chromadb' package is not installed. Install project dependencies to use vector storage.")
         if self.client is None:
             self.client = chromadb.PersistentClient(
                 path=self.persist_directory,

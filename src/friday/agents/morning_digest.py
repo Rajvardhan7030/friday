@@ -1,13 +1,13 @@
 """Morning Digest Agent."""
 
 import logging
-from typing import Dict, Any, List
-from friday.agents.base import BaseAgent, Context, AgentResult
-from friday.llm.engine import LLMEngine, Message
-from friday.skills.email_skill import EmailSkill
-from friday.skills.calendar_skill import CalendarSkill
-from friday.skills.news_skill import NewsSkill
-from friday.voice.tts import TTSEngine
+from typing import Dict, List
+from .base import BaseAgent, Context, AgentResult
+from ..llm.engine import LLMEngine, Message
+from ..skills.email_skill import EmailSkill
+from ..skills.calendar_skill import CalendarSkill
+from ..skills.news_skill import NewsSkill
+from ..voice.tts import TTSEngine
 
 logger = logging.getLogger(__name__)
 

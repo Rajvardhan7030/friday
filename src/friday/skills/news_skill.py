@@ -1,10 +1,14 @@
 """RSS/Atom news aggregator skill."""
 
 import logging
-import httpx
 import xml.etree.ElementTree as ET
 from typing import Dict, Any, List
-from friday.skills.base import BaseSkill, SkillResult
+from .base import BaseSkill, SkillResult
+
+try:
+    import httpx
+except ImportError:
+    httpx = None
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +25,8 @@ class NewsSkill(BaseSkill):
 
     async def execute(self, query: str, context: Dict[str, Any]) -> SkillResult:
         """Fetch news headlines from feeds."""
+        if httpx is None:
+            return SkillResult(success=False, data=[], message="The 'httpx' package is not installed.")
         # For v0.1 we'll use some default feeds, but these should come from config
         feeds = [
             "https://feeds.bbci.co.uk/news/rss.xml",

@@ -1,14 +1,20 @@
 """Local Speech-to-Text using Vosk and PyAudio."""
 
+from __future__ import annotations
+
 import sys
 import json
 import logging
 import asyncio
-import numpy as np
 import os
 import contextlib
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Any, Optional, List, Dict
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 try:
     import pyaudio
@@ -57,8 +63,8 @@ class STTEngine:
         self.device_index = config.get("voice.stt.device_index")
         self.energy_threshold = config.get("voice.stt.energy_threshold", 300)
         
-        self._model: Optional[vosk.Model] = None
-        self._recognizer: Optional[vosk.KaldiRecognizer] = None
+        self._model: Optional[Any] = None
+        self._recognizer: Optional[Any] = None
         self._audio_event = asyncio.Event()
 
     def _initialize_model(self) -> None:
@@ -108,9 +114,13 @@ class STTEngine:
         """Simple energy-based Voice Activity Detection (VAD)."""
         if not audio_data:
             return False
-        # Convert bytes to int16 array
-        audio_np = np.frombuffer(audio_data, dtype=np.int16)
-        energy = np.sqrt(np.mean(audio_np**2))
+        if np is not None:
+            # Convert bytes to int16 array when numpy is available.
+            audio_np = np.frombuffer(audio_data, dtype=np.int16)
+            energy = np.sqrt(np.mean(audio_np**2))
+        else:
+            import audioop
+            energy = audioop.rms(audio_data, 2)
         return energy > self.energy_threshold
 
     async def listen(

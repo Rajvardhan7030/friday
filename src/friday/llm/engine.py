@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, AsyncIterator
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 class Message(BaseModel):
     role: str
@@ -11,7 +11,7 @@ class Message(BaseModel):
 class LLMResponse(BaseModel):
     content: str
     raw_response: Any = None
-    usage: Dict[str, int] = {}
+    usage: Dict[str, int] = Field(default_factory=dict)
 
 class LLMEngine(ABC):
     """Abstract Base Class for LLM Engines."""

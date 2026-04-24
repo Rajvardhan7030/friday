@@ -2,10 +2,34 @@
 
 import pytest
 import asyncio
-from unittest.mock import MagicMock, AsyncMock, patch
-from pathlib import Path
-from src.friday.voice.tts import TTSEngine
-from src.friday.core.config import Config
+from unittest.mock import MagicMock, patch
+
+from friday.core.config import Config
+from friday.voice.tts import TTSEngine
+
+
+class SuccessfulProcess:
+    """Simple subprocess stub for successful Piper execution."""
+
+    returncode = 0
+
+    async def communicate(self, input=None):
+        return (b"stdout", b"stderr")
+
+
+class HangingProcess:
+    """Simple subprocess stub for timeout scenarios."""
+
+    def __init__(self):
+        self.kill = MagicMock()
+
+    async def communicate(self, input=None):
+        raise asyncio.TimeoutError()
+
+
+async def _raise_timeout(awaitable, timeout):
+    awaitable.close()
+    raise asyncio.TimeoutError()
 
 
 @pytest.fixture
@@ -23,7 +47,7 @@ def mock_config():
 @pytest.mark.asyncio
 async def test_speak_model_not_found(mock_config):
     """Test speak method when model is missing."""
-    with patch("src.friday.voice.tts.Path.exists", return_value=False):
+    with patch("friday.voice.tts.Path.exists", return_value=False):
         engine = TTSEngine(mock_config)
         # Should not raise exception but print missing message
         await engine.speak("Hello world")
@@ -32,14 +56,11 @@ async def test_speak_model_not_found(mock_config):
 @pytest.mark.asyncio
 async def test_speak_success(mock_config):
     """Test successful TTS synthesis and playback."""
-    # Mock Piper process
-    mock_process = AsyncMock()
-    mock_process.returncode = 0
-    mock_process.communicate.return_value = (b"stdout", b"stderr")
+    mock_process = SuccessfulProcess()
     
-    with patch("src.friday.voice.tts.Path.exists", return_value=True), \
+    with patch("friday.voice.tts.Path.exists", return_value=True), \
          patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec, \
-         patch("src.friday.voice.tts.TTSEngine._play_audio") as mock_play:
+         patch("friday.voice.tts.TTSEngine._play_audio") as mock_play:
         
         engine = TTSEngine(mock_config)
         await engine.speak("Hello world")
@@ -53,14 +74,11 @@ async def test_speak_success(mock_config):
 @pytest.mark.asyncio
 async def test_speak_timeout(mock_config):
     """Test Piper synthesis timeout."""
-    # Mock Piper process hanging
-    mock_process = AsyncMock()
-    mock_process.communicate.side_effect = asyncio.TimeoutError()
-    mock_process.kill = MagicMock()
+    mock_process = HangingProcess()
     
-    with patch("src.friday.voice.tts.Path.exists", return_value=True), \
+    with patch("friday.voice.tts.Path.exists", return_value=True), \
          patch("asyncio.create_subprocess_exec", return_value=mock_process), \
-         patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+         patch("asyncio.wait_for", side_effect=_raise_timeout):
         
         engine = TTSEngine(mock_config)
         await engine.speak("Hello world")

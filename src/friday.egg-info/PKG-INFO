@@ -33,46 +33,33 @@ Requires-Dist: ruff>=0.1.0; extra == "dev"
 Requires-Dist: mypy>=1.5.0; extra == "dev"
 Requires-Dist: types-PyYAML; extra == "dev"
 
-# FRIDAY
+# 🎙️ FRIDAY: Local-First AI Assistant
 
-A local-first, privacy-centric personal AI assistant framework.
+Friday is a privacy-centric, offline-first personal assistant. It combines high-speed local inference (Ollama) with high-quality voice (Piper/Vosk) and a secure code execution sandbox.
 
-## Core Philosophy
-- **Local-First by Default**: All inference, embedding, and TTS must default to local models.
-- **Privacy Boundary**: No telemetry, no external logging. User data never leaves the machine.
-- **Hardware Adaptive**: Auto-detect hardware and select appropriate model quantization and inference backend.
-- **Natural Interaction**: High-quality local voice and memory-driven conversations.
+## 🏗️ Architecture
+- **Core**: Registry-based command dispatcher with session persistence.
+- **IO**: Rich-powered CLI with dual Text/Voice input modes.
+- **Security**: Subprocess sandboxing with `unshare` and resource `ulimits`.
+- **Voice**: 100% local TTS (Piper) and STT (Vosk).
 
-## Quick Start
-1. Install [Ollama](https://ollama.ai/)
-2. Install FRIDAY:
+## 🚀 Quick Start
+1. **Install Dependencies**:
    ```bash
    pip install -e .
    ```
-3. Initialize:
-   ```bash
-   friday init
-   ```
-4. Setup Voice (High-quality British Female):
+2. **Setup Models**:
    ```bash
    friday voice download
    ```
-5. Start Chatting:
+3. **Verify Health**:
    ```bash
-   friday ask "Hello Friday, how are you today?" --voice
+   friday doctor
+   ```
+4. **Launch**:
+   ```bash
+   friday
    ```
 
-## Key Features
-- **Conversational Memory**: Remembers your recent interactions for more natural follow-ups.
-- **High-Quality TTS**: Features a refined British female voice using Piper.
-- **Multi-Modal Agents**: Specialist agents for research, coding, and general assistance.
-- **Local RAG**: Index your own documents to build a private knowledge base.
-
-## Development
-```bash
-# Install with dev dependencies
-pip install -e ".[dev]"
-
-# Run tests
-pytest
-```
+## 🛠️ Configuration
+Edit `~/.friday/config.yaml` to change LLM models, voice speed, or sandbox timeouts.

@@ -4,8 +4,8 @@ import logging
 import imaplib
 import email
 from email.header import decode_header
-from typing import Dict, Any, List, Optional
-from friday.skills.base import BaseSkill, SkillResult
+from typing import Dict, Any, List
+from .base import BaseSkill, SkillResult
 
 logger = logging.getLogger(__name__)
 

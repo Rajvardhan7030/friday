@@ -2,9 +2,9 @@
 
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List
 import aiofiles
-from friday.memory.vector_store import VectorStore
+from .vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 

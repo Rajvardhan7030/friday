@@ -6,7 +6,6 @@ from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, event
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker
-from friday.llm.engine import Message
 
 Base = declarative_base()
 logger = logging.getLogger(__name__)

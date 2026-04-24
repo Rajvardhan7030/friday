@@ -28,12 +28,13 @@ async def code_task_handler(session: Session, task_description: str, llm: Option
         return "Internal Error: LLM engine not available for coding tasks."
     
     # Resolve workspace directory
-    workspace_dir = Path.home() / "Desktop" # Use Desktop as requested for this specific task
+    workspace_dir = Path.home() / "Desktop"
     if config:
-        workspace_dir = Path(config.get("base_dir", Path.home() / ".friday")) / "workspace"
+        workspace_dir = Path(getattr(config, "base_dir", Path.home() / ".friday")) / "workspace"
     
     # If the user explicitly mentions 'desktop', use that
-    if "desktop" in task_description.lower() or "desktop" in session.history[-1]["content"].lower() if session.history else False:
+    previous_message = session.history[-1]["content"].lower() if session.history else ""
+    if "desktop" in task_description.lower() or "desktop" in previous_message:
         workspace_dir = Path.home() / "Desktop"
 
     logger.info(f"Handling code task: {task_description}")
