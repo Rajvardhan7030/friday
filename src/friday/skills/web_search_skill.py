@@ -1,30 +1,26 @@
-"""DuckDuckGo local search integration skill."""
+"""Async DuckDuckGo HTML search integration skill."""
 
-import logging
 import asyncio
+import logging
+import re
 import time
-import warnings
-from typing import Dict, Any
-from .base import BaseSkill, SkillResult
+from html import unescape
+from typing import Any, Dict, List
 
-try:
-    from ddgs import DDGS
-    USING_LEGACY_DDGS = False
-except ImportError:
-    try:
-        from duckduckgo_search import DDGS
-        USING_LEGACY_DDGS = True
-    except ImportError:
-        DDGS = None
-        USING_LEGACY_DDGS = False
+import httpx
+
+from .base import BaseSkill, SkillResult
 
 logger = logging.getLogger(__name__)
 
 class WebSearchSkill(BaseSkill):
-    """Local web search skill using DuckDuckGo with rate limiting and caching."""
+    """Async web search skill using DuckDuckGo's HTML endpoint."""
+
+    SEARCH_URL = "https://html.duckduckgo.com/html/"
+    USER_AGENT = "FRIDAY/0.1 (+https://local-first.assistant)"
 
     def __init__(self):
-        self._cache: Dict[str, Any] = {}
+        self._cache: Dict[str, List[Dict[str, Any]]] = {}
         self._last_search_time: float = 0.0
         self._rate_limit_lock = asyncio.Lock()
 
@@ -38,10 +34,6 @@ class WebSearchSkill(BaseSkill):
 
     async def execute(self, query: str, context: Dict[str, Any]) -> SkillResult:
         """Execute web search query with rate limiting and caching."""
-        if DDGS is None:
-            return SkillResult(success=False, data=[], message="The 'duckduckgo-search' package is not installed.")
-
-        # 1. Check cache first
         if query in self._cache:
             logger.debug(f"Cache hit for web search: {query}")
             return SkillResult(success=True, data=self._cache[query])
@@ -49,7 +41,7 @@ class WebSearchSkill(BaseSkill):
         await self._acquire_search_slot()
 
         try:
-            results = await asyncio.to_thread(self._search, query)
+            results = await self._search(query)
 
             if not results:
                 return SkillResult(success=False, data=[], message="No results found.")
@@ -72,23 +64,56 @@ class WebSearchSkill(BaseSkill):
 
             self._last_search_time = now
 
-    @staticmethod
-    def _search(query: str) -> list[Dict[str, Any]]:
-        """Run the synchronous DDGS search call off the event loop."""
-        results = []
-        if USING_LEGACY_DDGS:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", RuntimeWarning)
-                with DDGS() as ddgs:
-                    ddgs_gen = ddgs.text(query, max_results=5)
-                    if ddgs_gen:
-                        for result in ddgs_gen:
-                            results.append(result)
-            return results
+    async def _search(self, query: str) -> List[Dict[str, Any]]:
+        """Fetch and parse DuckDuckGo HTML results asynchronously."""
+        html = await self._fetch_search_page(query)
+        return self._parse_results(html)
 
-        with DDGS() as ddgs:
-            ddgs_gen = ddgs.text(query, max_results=5)
-            if ddgs_gen:
-                for result in ddgs_gen:
-                    results.append(result)
+    async def _fetch_search_page(self, query: str) -> str:
+        """Call the DuckDuckGo HTML endpoint using an async HTTP client."""
+        async with httpx.AsyncClient(
+            headers={"User-Agent": self.USER_AGENT},
+            follow_redirects=True,
+            timeout=10.0,
+        ) as client:
+            response = await client.get(self.SEARCH_URL, params={"q": query})
+            response.raise_for_status()
+            return response.text
+
+    @staticmethod
+    def _parse_results(html: str) -> List[Dict[str, Any]]:
+        """Extract a small structured result set from DuckDuckGo HTML."""
+        title_matches = re.findall(
+            r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+            html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        snippet_matches = re.findall(
+            r'<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>|'
+            r'<div[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</div>',
+            html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        snippets = [
+            WebSearchSkill._clean_html(anchor_snippet or div_snippet)
+            for anchor_snippet, div_snippet in snippet_matches
+        ]
+
+        results: List[Dict[str, Any]] = []
+        for index, (href, raw_title) in enumerate(title_matches[:5]):
+            results.append(
+                {
+                    "title": WebSearchSkill._clean_html(raw_title),
+                    "href": unescape(href),
+                    "body": snippets[index] if index < len(snippets) else "",
+                }
+            )
         return results
+
+    @staticmethod
+    def _clean_html(value: str) -> str:
+        """Collapse simple HTML fragments into plain text."""
+        value = re.sub(r"<[^>]+>", "", value)
+        value = unescape(value)
+        return " ".join(value.split())

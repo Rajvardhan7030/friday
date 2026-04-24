@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import types
 
 from friday.agents.base import Context
 from friday.agents.code_assistant import _resolve_workspace_dir, code_task_handler
@@ -11,6 +12,7 @@ from friday.agents.morning_digest import morning_digest_handler
 from friday.agents.research import ResearchAgent
 from friday.agents.system_commands import clear_handler
 from friday.core.agent_runner import Session
+from friday.core.agent_runner import AgentRunner
 from friday.core.registry import registry
 from friday.llm.engine import Message
 from friday.llm.local import LocalEngine
@@ -79,13 +81,13 @@ async def test_morning_digest_command_matches_and_uses_agent(monkeypatch):
     session = Session()
     llm = MagicMock()
     config = MagicMock()
+    tts = MagicMock()
 
     async def fake_run(self, ctx):
         assert ctx.user_query == "morning digest"
         assert ctx.chat_history == session.history
         return type("Result", (), {"content": "Here is your digest."})()
 
-    monkeypatch.setattr("friday.agents.morning_digest.TTSEngine", MagicMock())
     monkeypatch.setattr("friday.agents.morning_digest.MorningDigestAgent.run", fake_run)
 
     handler_data = registry.find_handler("morning digest")
@@ -94,7 +96,7 @@ async def test_morning_digest_command_matches_and_uses_agent(monkeypatch):
     command, _match = handler_data
     assert command.name == "Morning Digest"
 
-    result = await morning_digest_handler(session, llm=llm, config=config)
+    result = await morning_digest_handler(session, llm=llm, config=config, tts=tts)
 
     assert result == "Here is your digest."
 
@@ -196,8 +198,29 @@ async def test_code_task_handler_executes_in_configured_workspace(monkeypatch, t
     assert recorded_workspace["path"] == config.base_dir / "workspace"
 
 
+@pytest.mark.asyncio
+async def test_code_task_handler_returns_clean_sandbox_failure(monkeypatch, tmp_path):
+    session = Session()
+    config = MagicMock()
+    config.base_dir = tmp_path / "friday-home"
+
+    llm = MagicMock()
+    llm.chat = AsyncMock(return_value=type("Response", (), {"content": "```python\nprint('ok')\n```"})())
+
+    monkeypatch.setattr(
+        "friday.agents.code_assistant.run_sandboxed_code",
+        lambda code, workspace_dir, config=None: (False, "Error: sandbox unavailable"),
+    )
+
+    result = await code_task_handler(session, "named demo.py", llm=llm, config=config)
+
+    assert "sandboxed execution failed" in result
+    assert "sandbox unavailable" in result
+    assert llm.chat.await_count == 1
+
+
 def test_session_history_limit_is_configurable():
-    session = Session(max_history_messages=3)
+    session = Session(max_history_messages=3, recent_messages=2, summary_max_chars=200)
 
     for index in range(5):
         session.add_message("user", f"message {index}")
@@ -207,3 +230,198 @@ def test_session_history_limit_is_configurable():
         "message 3",
         "message 4",
     ]
+    assert "message 0" in session.history_summary
+    assert "message 1" in session.history_summary
+
+
+def test_session_builds_llm_messages_with_summary_and_recent_window():
+    session = Session(max_history_messages=3, recent_messages=2, summary_max_chars=200)
+
+    for role, content in [
+        ("user", "message 0"),
+        ("assistant", "reply 0"),
+        ("user", "message 1"),
+        ("assistant", "reply 1"),
+        ("user", "message 2"),
+    ]:
+        session.add_message(role, content)
+
+    messages = session.build_llm_messages("latest question")
+
+    assert messages[0].role == "system"
+    assert "message 0" in messages[0].content
+    assert [(message.role, message.content) for message in messages[1:]] == [
+        ("assistant", "reply 1"),
+        ("user", "message 2"),
+        ("user", "latest question"),
+    ]
+
+
+def test_agent_runner_discovers_modules_dynamically(monkeypatch):
+    imported_modules = []
+    fake_package = types.SimpleNamespace(__path__=["/fake/friday/agents"])
+
+    class FakeModuleInfo:
+        def __init__(self, name):
+            self.name = name
+
+    def fake_import_module(name):
+        imported_modules.append(name)
+        if name == "friday.agents":
+            return fake_package
+        return object()
+
+    monkeypatch.setattr(
+        "friday.core.agent_runner.import_module",
+        fake_import_module,
+    )
+    monkeypatch.setattr(
+        "friday.core.agent_runner.pkgutil.iter_modules",
+        lambda paths: [FakeModuleInfo("system_commands"), FakeModuleInfo("morning_digest"), FakeModuleInfo("_private")],
+    )
+
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.config = MagicMock()
+    runner.config.get.return_value = []
+
+    runner._load_agents()
+
+    assert imported_modules == [
+        "friday.agents",
+        "friday.agents.system_commands",
+        "friday.agents.morning_digest",
+    ]
+
+
+def test_agent_runner_skips_configured_agent_modules(monkeypatch):
+    imported_modules = []
+    fake_package = types.SimpleNamespace(__path__=["/fake/friday/agents"])
+
+    class FakeModuleInfo:
+        def __init__(self, name):
+            self.name = name
+
+    def fake_import_module(name):
+        imported_modules.append(name)
+        if name == "friday.agents":
+            return fake_package
+        return object()
+
+    monkeypatch.setattr(
+        "friday.core.agent_runner.import_module",
+        fake_import_module,
+    )
+    monkeypatch.setattr(
+        "friday.core.agent_runner.pkgutil.iter_modules",
+        lambda paths: [FakeModuleInfo("system_commands"), FakeModuleInfo("morning_digest")],
+    )
+
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.config = MagicMock()
+    runner.config.get.return_value = ["morning_digest"]
+
+    runner._load_agents()
+
+    assert imported_modules == [
+        "friday.agents",
+        "friday.agents.system_commands",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_injects_long_term_memory_into_llm_context():
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.config = MagicMock()
+    runner.config.get.side_effect = lambda key, default=None: {
+        "memory.retrieval_limit": 2,
+        "memory.auto_remember_conversations": False,
+    }.get(key, default)
+    runner.session = Session(max_history_messages=10, recent_messages=5, summary_max_chars=200)
+    runner.llm = MagicMock()
+    runner.llm.chat = AsyncMock(return_value=type("Response", (), {"content": "memory aware answer"})())
+    runner.vector_store = MagicMock()
+    runner.vector_store.similarity_search = AsyncMock(return_value=[
+        {"content": "Friday likes local-first tools.", "metadata": {"source": "notes.md"}}
+    ])
+    runner.document_indexer = MagicMock()
+    runner._memory_ready = True
+    runner._memory_disabled_reason = None
+
+    result = await AgentRunner._fallback_to_llm(runner, "What do you know about Friday?")
+
+    assert result == "memory aware answer"
+    messages = runner.llm.chat.await_args.args[0]
+    assert any("Relevant long-term memory" in message.content for message in messages)
+    assert any("notes.md" in message.content for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_remembers_successful_llm_exchanges():
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.config = MagicMock()
+    runner.config.get.side_effect = lambda key, default=None: {
+        "memory.retrieval_limit": 3,
+        "memory.auto_remember_conversations": True,
+    }.get(key, default)
+    runner.session = Session(max_history_messages=10, recent_messages=5, summary_max_chars=200)
+    runner.llm = MagicMock()
+    runner.llm.chat = AsyncMock(return_value=type("Response", (), {"content": "stored answer"})())
+    runner.vector_store = MagicMock()
+    runner.vector_store.similarity_search = AsyncMock(return_value=[])
+    runner.vector_store.add_documents = AsyncMock()
+    runner.document_indexer = MagicMock()
+    runner._memory_ready = True
+    runner._memory_disabled_reason = None
+
+    result = await AgentRunner._fallback_to_llm(runner, "remember this")
+
+    assert result == "stored answer"
+    runner.vector_store.add_documents.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_gracefully_disables_memory_when_initialization_fails():
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.config = MagicMock()
+    runner.config.get.side_effect = lambda key, default=None: {
+        "memory.auto_index_directories": [],
+    }.get(key, default)
+    runner.vector_store = MagicMock()
+    runner.vector_store.initialize = AsyncMock(side_effect=RuntimeError("chromadb unavailable"))
+    runner.document_indexer = MagicMock()
+    runner._memory_ready = False
+    runner._memory_disabled_reason = None
+
+    await runner._ensure_memory_ready()
+
+    assert runner.vector_store is None
+    assert runner.document_indexer is None
+    assert runner._memory_disabled_reason == "chromadb unavailable"
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_returns_clean_message_on_sandbox_failure(monkeypatch, tmp_path):
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.config = MagicMock()
+    runner.config.base_dir = tmp_path / "friday-home"
+    runner.config.get.side_effect = lambda key, default=None: {
+        "memory.auto_remember_conversations": False,
+    }.get(key, default)
+    runner.session = Session()
+    runner.llm = MagicMock()
+    runner.llm.chat = AsyncMock(return_value=type("Response", (), {"content": "```python\nprint('ok')\n```"})())
+    runner.tts = None
+    runner.vector_store = None
+    runner.document_indexer = None
+    runner._memory_ready = True
+    runner._memory_disabled_reason = None
+
+    monkeypatch.setattr(
+        "friday.agents.code_assistant.run_sandboxed_code",
+        lambda code, workspace_dir, config=None: (False, "Error: network-isolated sandbox unavailable"),
+    )
+
+    result = await AgentRunner.handle_input(runner, "create file named demo.py")
+
+    assert "sandboxed execution failed" in result
+    assert "network-isolated sandbox unavailable" in result

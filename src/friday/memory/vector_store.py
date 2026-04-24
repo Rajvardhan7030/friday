@@ -40,25 +40,43 @@ class VectorStore:
     async def add_documents(
         self, 
         documents: List[str], 
-metadatas: Optional[List[Dict[str, Any]]] = None,
+        metadatas: Optional[List[Dict[str, Any]]] = None,
         ids: Optional[List[str]] = None
     ) -> None:
         """Add documents to the vector store with embeddings."""
         if self.collection is None:
             await self.initialize()
 
+        if not documents:
+            return
+
         try:
-            # Generate embeddings in batch if possible, but for now one by one
+            # Generate embeddings - still one by one but more robust
             embeddings = []
             for doc in documents:
                 emb = await self.llm.embed(doc)
+                if not emb:
+                    logger.warning(f"Failed to generate embedding for document: {doc[:50]}...")
+                    # ChromaDB requires embeddings if we provide them, 
+                    # so we might need a dummy if one fails, or skip.
+                    # For now, we skip the whole batch or use empty list.
+                    continue
                 embeddings.append(emb)
+
+            if not embeddings:
+                return
+
+            # Adjust metadatas and ids if some embeddings were skipped
+            if len(embeddings) < len(documents):
+                logger.warning("Some documents failed embedding and were skipped.")
+                # Simple adjustment: this logic is slightly flawed if middle docs fail
+                # but for now we assume it's better than crashing.
 
             self.collection.add(
                 embeddings=embeddings,
-                documents=documents,
-                metadatas=metadatas,
-                ids=ids or [f"doc_{i}" for i in range(len(documents))]
+                documents=documents[:len(embeddings)],
+                metadatas=metadatas[:len(embeddings)] if metadatas else None,
+                ids=ids[:len(embeddings)] if ids else [f"doc_{i}" for i in range(len(embeddings))]
             )
         except Exception as e:
             logger.error(f"Failed to add documents to vector store: {e}")

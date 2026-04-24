@@ -26,6 +26,7 @@ async def morning_digest_handler(
     session: Session,
     llm: LLMEngine | None = None,
     config: Config | None = None,
+    tts: TTSEngine | None = None,
     **_kwargs,
 ):
     """Entry point to run the morning digest from the command registry."""
@@ -33,8 +34,10 @@ async def morning_digest_handler(
         return "Internal Error: LLM engine not available for the morning digest."
     if config is None:
         return "Internal Error: Configuration not available for the morning digest."
+    if tts is None:
+        return "Internal Error: TTS engine not available for the morning digest."
 
-    agent = MorningDigestAgent(llm, TTSEngine(config))
+    agent = MorningDigestAgent(llm, tts)
     result = await agent.run(
         Context(
             user_query="morning digest",

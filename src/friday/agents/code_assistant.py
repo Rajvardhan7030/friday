@@ -35,7 +35,13 @@ def _resolve_workspace_dir(
     usage="create a file named hello.py",
     priority=5
 )
-async def code_task_handler(session: Session, task_description: str, llm: Optional[LLMEngine] = None, config: Optional[Config] = None):
+async def code_task_handler(
+    session: Session,
+    task_description: str,
+    llm: Optional[LLMEngine] = None,
+    config: Optional[Config] = None,
+    **_kwargs,
+):
     """
     Handler for coding tasks that uses the LLM to generate code 
     and executes it in a sandbox.
@@ -73,6 +79,14 @@ async def code_task_handler(session: Session, task_description: str, llm: Option
                 "success": success,
                 "output": output
             })
+
+        failed_results = [result for result in execution_results if not result["success"]]
+        if failed_results:
+            failure_output = "\n\n".join(result["output"] for result in failed_results)
+            return (
+                "I couldn't complete that code task because sandboxed execution failed.\n"
+                f"{failure_output}"
+            )
             
         # Final synthesis
         if execution_results:

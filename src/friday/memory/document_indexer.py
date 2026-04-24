@@ -79,10 +79,13 @@ class DocumentIndexer:
         
         while start < len(text):
             end = start + self.chunk_size
-            chunks.append(text[start:end])
+            chunk = text[start:end]
+            if chunk:
+                chunks.append(chunk)
+            
             start += step
             
-            # Prevent infinite loop
+            # If we've reached or passed the end, stop
             if start >= len(text):
                 break
                 

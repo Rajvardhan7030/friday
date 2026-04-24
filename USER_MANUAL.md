@@ -1,37 +1,73 @@
-# FRIDAY User Manual
+# FRIDAY User Manual: A Simple Guide
 
-## 🎮 Basic Interaction
-- **Interactive Shell**: Run `friday` to open the main REPL.
-- **One-Shot Ask**: Run `friday ask "question"` to get one answer and exit.
-- **Spoken One-Shot Ask**: Run `friday ask -v "question"` to hear the answer aloud.
-- **Text Mode**: In the interactive shell, type normal requests directly into the `>>>` prompt.
-- **Voice Mode**: Type `/voice on` to enable the microphone and spoken replies. Type `/voice off` to return to text-only mode.
-- **Exit**: Type `/exit`, `/quit`, or `/bye`.
+Welcome! This guide will help you get the most out of **FRIDAY**, your personal AI assistant. No technical degree required!
 
-## 🧭 Command Rules
-- Slash-prefixed commands are reserved for shell controls such as `/voice on` and `/exit`.
-- Regular assistant requests should stay as plain text, such as `help` or `who are you?`.
-- `-v` and `--voice-output` enable spoken output for command-line flows like `friday ask`.
+---
 
-## 🤖 Available Commands
-- `help`: Lists all available tools.
-- `who are you?`: Identity and system info.
-- `clear history`: Resets the AI's short-term memory.
-- `create a file [name]`: Triggers the Code Assistant to write and execute Python code.
+## 🏁 Getting Started
 
-## ⚙️ Administrative Commands
-- `friday voice download`: Fetches the Jenny (Female) TTS model and Vosk STT models.
-- `friday doctor`: Runs a diagnostic check on your local Ollama instance and audio drivers.
-- `friday ask "question"`: Runs a one-shot prompt without opening the interactive shell.
-- `friday ask -v "question"`: Runs a one-shot prompt and speaks the response aloud.
+### 1. How to talk to FRIDAY
+Open your terminal (Command Prompt on Windows, Terminal on Mac/Linux) and type:
+`friday`
 
-## 📝 Typical Examples
-- `friday`
-- `friday ask "summarize my last task"`
-- `friday ask -v "what time is it"`
-- `/voice on`
-- `/voice off`
-- `/exit`
+You will see a prompt like this: `>>>`. This is where you type your questions!
 
-## 🔒 Security Policy
-Friday executes code in a restricted sandbox. On Linux, it attempts to use `unshare` to disable network access during execution. Files created by Friday are stored in `~/Desktop` or `~/.friday/workspace` by default.
+### 2. Voice Mode (Talking and Listening)
+If you'd rather talk than type:
+1. Type `/voice on` in the chat and press Enter.
+2. Wait for FRIDAY to say "Voice mode enabled."
+3. Speak clearly into your microphone. FRIDAY will listen, think, and speak back to you!
+4. To stop talking and go back to typing, type `/voice off`.
+
+---
+
+## 🤖 What can I ask FRIDAY?
+
+FRIDAY can help with many things. Here are some examples of what you can type:
+
+| What you want | What to type/say |
+| :--- | :--- |
+| **Get Help** | `help` |
+| **Friendly Hello** | `Hi Friday!` |
+| **Check Identity** | `Who are you?` |
+| **Write a file** | `Create a file named shopping_list.txt` |
+| **Write a script** | `Write a python script that calculates the area of a circle` |
+| **Daily Briefing** | `Morning digest` |
+| **Clear History** | `Clear history` |
+
+---
+
+## 🧠 Memory: How FRIDAY remembers you
+
+FRIDAY has two types of memory:
+1. **Short-Term**: She remembers the conversation you are having *right now*. If you say "My name is John," and then ask "What is my name?", she will know.
+2. **Long-Term**: If enabled, FRIDAY can "read" files in her workspace folder (`~/.friday/workspace`) to help answer your questions about your own documents.
+
+To start fresh and make her forget the current conversation, just type:
+`clear history`
+
+---
+
+## ❓ Troubleshooting (When things go wrong)
+
+### "Friday is not responding"
+- Make sure **Ollama** is running on your computer.
+- Check your internet connection (only needed for the initial setup/downloads).
+
+### "I can't hear Friday"
+- Make sure your speakers are turned on and the volume is up.
+- Run `friday voice download` to ensure the voice files are installed.
+
+### "Friday can't hear me"
+- Check that your microphone is plugged in and selected as the default input in your system settings.
+- Type `/voice on` to make sure she is listening.
+
+### Running a Health Check
+If you are having trouble, run this command in your terminal:
+`friday doctor`
+This will tell you if any parts of FRIDAY are "sick" or missing.
+
+---
+
+## 🛡️ Staying Safe
+FRIDAY is built with security in mind. When she runs code to help you with a task, she does it in a "Sandbox." This is like a virtual room that she can't leave, so the code can't accidentally delete your important files or spy on your other apps.

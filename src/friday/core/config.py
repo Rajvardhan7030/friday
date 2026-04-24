@@ -61,6 +61,18 @@ class Config:
             },
             "session": {
                 "max_history_messages": 100,
+                "recent_messages": 20,
+                "summary_max_chars": 4000,
+            },
+            "agents": {
+                "skip_modules": [],
+            },
+            "memory": {
+                "enabled": True,
+                "persist_directory": str(self.base_dir / "memory_store"),
+                "auto_index_directories": [str(self.base_dir / "workspace")],
+                "retrieval_limit": 3,
+                "auto_remember_conversations": True,
             },
             "llm": {
                 "engine": "ollama",
