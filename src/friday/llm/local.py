@@ -28,6 +28,8 @@ class LocalEngine(LLMEngine):
         self.base_url = base_url
         self._client = ollama.AsyncClient(host=base_url)
         self._current_model = primary_model
+        self._known_chat_model: Optional[str] = None
+        self._known_embed_model: Optional[str] = None
 
     @property
     def model_name(self) -> str:
@@ -43,10 +45,22 @@ class LocalEngine(LLMEngine):
         formatted_messages = self._format_messages(messages)
         tried_models: List[str] = []
 
+        # 1. Try known working model first if available
+        if self._known_chat_model:
+            try:
+                return await self._chat_with_model(self._known_chat_model, formatted_messages, tools, stream)
+            except Exception as e:
+                if not self._is_model_not_found_error(e):
+                    raise
+                self._known_chat_model = None
+
+        # 2. Try configured models
         try:
             for model in self._model_attempt_order():
                 try:
-                    return await self._chat_with_model(model, formatted_messages, tools, stream)
+                    res = await self._chat_with_model(model, formatted_messages, tools, stream)
+                    self._known_chat_model = model
+                    return res
                 except Exception as e:
                     if not self._is_model_not_found_error(e):
                         logger.error(f"Ollama chat error with {model}: {e}")
@@ -55,12 +69,15 @@ class LocalEngine(LLMEngine):
                     logger.warning(f"Model '{model}' not found in Ollama.")
                     tried_models.append(model)
 
+            # 3. Last resort: any available model
             available = await self.get_available_models()
             last_resort_models = [m for m in available if m not in tried_models]
             for model in last_resort_models:
                 logger.info(f"Using available model '{model}' as last resort.")
                 try:
-                    return await self._chat_with_model(model, formatted_messages, tools, stream)
+                    res = await self._chat_with_model(model, formatted_messages, tools, stream)
+                    self._known_chat_model = model
+                    return res
                 except Exception as e:
                     if not self._is_model_not_found_error(e):
                         logger.error(f"Ollama chat error with {model}: {e}")
@@ -105,10 +122,22 @@ class LocalEngine(LLMEngine):
         """Generate local embeddings."""
         tried_models: List[str] = []
 
+        # 1. Try known working model first
+        if self._known_embed_model:
+            try:
+                return await self._embed_with_model(self._known_embed_model, text)
+            except Exception as e:
+                if not self._is_model_not_found_error(e):
+                    raise
+                self._known_embed_model = None
+
+        # 2. Try configured models
         try:
             for model in self._model_attempt_order():
                 try:
-                    return await self._embed_with_model(model, text)
+                    res = await self._embed_with_model(model, text)
+                    self._known_embed_model = model
+                    return res
                 except Exception as e:
                     if not self._is_model_not_found_error(e):
                         logger.error(f"Ollama embedding error with {model}: {e}")
@@ -117,12 +146,15 @@ class LocalEngine(LLMEngine):
                     logger.warning(f"Model '{model}' not found for embeddings.")
                     tried_models.append(model)
 
+            # 3. Last resort
             available = await self.get_available_models()
             last_resort_models = [m for m in available if m not in tried_models]
             for model in last_resort_models:
                 logger.info(f"Using '{model}' for embeddings instead.")
                 try:
-                    return await self._embed_with_model(model, text)
+                    res = await self._embed_with_model(model, text)
+                    self._known_embed_model = model
+                    return res
                 except Exception as e:
                     if not self._is_model_not_found_error(e):
                         logger.error(f"Ollama embedding error with {model}: {e}")

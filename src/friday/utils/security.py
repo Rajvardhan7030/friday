@@ -52,6 +52,8 @@ def run_sandboxed_code(
         script_path = Path(f.name)
 
     process = None
+    was_fallback = False
+    fallback_reason = ""
     try:
         # Use current interpreter for consistency
         cmd = [sys.executable, str(script_path)]
@@ -77,9 +79,12 @@ def run_sandboxed_code(
             elif backend == "unshare":
                 isolation_error = _validate_unshare_support()
                 if isolation_error:
-                    logger.error(isolation_error)
-                    return False, isolation_error
-                cmd = ["unshare", "-n"] + cmd
+                    was_fallback = True
+                    fallback_reason = isolation_error
+                    logger.warning(f"Unshare isolation failed: {isolation_error}. Falling back to basic process isolation.")
+                    # We continue without unshare, but resource limits (preexec_fn) still apply below
+                else:
+                    cmd = ["unshare", "-n"] + cmd
 
         # Execution flags
         kwargs: Dict[str, Any] = {
@@ -110,6 +115,11 @@ def run_sandboxed_code(
             stdout, stderr = process.communicate(timeout=timeout)
             success = process.returncode == 0
             output = stdout if success else stderr
+            
+            if was_fallback:
+                warning = f"Warning: Sandbox isolation was reduced. {fallback_reason}\n"
+                output = warning + output
+                
             return success, output
             
         except subprocess.TimeoutExpired:

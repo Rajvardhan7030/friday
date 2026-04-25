@@ -116,7 +116,7 @@ class Config:
                     pass
 
     def _ensure_directories(self) -> None:
-        """Create necessary directories if they don't exist."""
+        """Create necessary directories and files with correct permissions."""
         directories = [
             self.base_dir / "models",
             self.base_dir / "logs",
@@ -124,6 +124,19 @@ class Config:
         ]
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
+            
+        # Enforce log file permissions early
+        log_file = Path(self.get("logging.file"))
+        try:
+            if not log_file.exists():
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                # Create empty file with 0o600
+                fd = os.open(log_file, os.O_CREAT | os.O_WRONLY, 0o600)
+                os.close(fd)
+            else:
+                os.chmod(log_file, 0o600)
+        except Exception as e:
+            logger.warning(f"Could not secure log file permissions: {e}")
 
     def _deep_update(self, base_dict: Dict[str, Any], update_dict: Dict[str, Any]) -> None:
         """Recursively update a dictionary."""
@@ -175,12 +188,20 @@ class Config:
             self.save()
 
     def save(self) -> None:
-        """Persist the current configuration to the YAML file."""
+        """Persist the current configuration to the YAML file with restricted permissions."""
         try:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.config_path, "w") as f:
-                yaml.dump(self._data, f, default_flow_style=False)
-            logger.info(f"Configuration saved to {self.config_path}")
+            # Create file with 0o600 if it doesn't exist, or update permissions if it does
+            mode = 0o600
+            if not self.config_path.exists():
+                with open(os.open(self.config_path, os.O_CREAT | os.O_WRONLY, mode), "w") as f:
+                    yaml.dump(self._data, f, default_flow_style=False)
+            else:
+                with open(self.config_path, "w") as f:
+                    yaml.dump(self._data, f, default_flow_style=False)
+                os.chmod(self.config_path, mode)
+                
+            logger.info(f"Configuration saved to {self.config_path} (mode 0o600)")
         except Exception as e:
             raise ConfigurationError(f"Failed to save configuration: {e}")
 

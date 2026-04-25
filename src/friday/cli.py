@@ -12,7 +12,7 @@ from rich.prompt import Prompt
 from .core.config import Config
 from .core.agent_runner import AgentRunner
 from .core.exceptions import ModelNotFoundError
-from .utils.logging import setup_logging
+from .utils.logging import setup_logging, ignore_stderr
 from .voice.tts import TTSEngine
 from .voice.stt import STTEngine
 
@@ -27,8 +27,9 @@ class FridayCLI:
         setup_logging(Path(self.config.get("logging.file")))
         
         self.runner = AgentRunner(self.config)
-        self.tts = TTSEngine(self.config)
-        self.stt = STTEngine(self.config)
+        with ignore_stderr():
+            self.tts = TTSEngine(self.config)
+            self.stt = STTEngine(self.config)
         self.voice_mode = False
         self.voice_output_enabled = voice_output_enabled
 
