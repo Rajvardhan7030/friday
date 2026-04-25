@@ -7,6 +7,7 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 
 from .registry import registry
+from .plugin import plugin_manager
 from .config import Config
 from .exceptions import ModelNotFoundError
 from ..llm.local import LocalEngine
@@ -34,13 +35,54 @@ class Session:
         self.summary_max_chars = summary_max_chars
         self.history_summary = ""
 
-    def add_message(self, role: str, content: str):
+    def add_message(self, role: str, content: str, llm: Optional['LocalEngine'] = None):
         """Add a message to the session history."""
         self.history.append({"role": role, "content": content})
         if len(self.history) > self.max_history_messages:
             overflow = len(self.history) - self.max_history_messages
             archived_messages = self.history[:overflow]
             self.history = self.history[overflow:]
+            if llm:
+                import asyncio
+                # Trigger semantic summarization in background
+                asyncio.create_task(self._summarize_messages(archived_messages, llm))
+            else:
+                self._append_to_summary(archived_messages)
+
+    async def _summarize_messages(self, archived_messages: List[Dict[str, str]], llm: 'LocalEngine') -> None:
+        """Condense evicted messages into a structured semantic JSON summary."""
+        import json
+
+        lines = [f"{msg['role'].capitalize()}: {msg['content']}" for msg in archived_messages]
+        chat_text = "\n".join(lines)
+
+        current = self.history_summary if self.history_summary else "{}"
+        prompt = (
+            "You are an AI assistant's memory manager. Analyze this conversation snippet "
+            "and update the current summary. The summary MUST be valid JSON containing "
+            "'user_preferences' (list), 'active_tasks' (list), and 'general_context' (string).\n\n"
+            f"Current Summary:\n{current}\n\n"
+            f"New Messages:\n{chat_text}\n\n"
+            "Return ONLY the updated JSON object. Do not include markdown blocks or extra text."
+        )
+
+        try:
+            res = await llm.chat([Message(role="system", content=prompt)])
+            content = res.content.strip()
+            if content.startswith("```json"):
+                content = content[7:]
+            elif content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
+
+            # Verify JSON
+            json.loads(content)
+            self.history_summary = content
+            logger.info("Session semantic memory updated successfully.")
+        except Exception as e:
+            logger.warning(f"Semantic summarization failed, falling back to text: {e}")
             self._append_to_summary(archived_messages)
 
     def build_llm_messages(self, user_input: str) -> List[Message]:
@@ -112,20 +154,24 @@ class AgentRunner:
             agents_package = import_module("friday.agents")
         except ImportError as e:
             logger.warning("Could not import agents package: %s", e)
-            return
+            agents_package = None
 
-        skipped_modules = set(self.config.get("agents.skip_modules", []))
+        if agents_package:
+            skipped_modules = set(self.config.get("agents.skip_modules", []))
 
-        for module_info in pkgutil.iter_modules(agents_package.__path__):
-            module_name = module_info.name
+            for module_info in pkgutil.iter_modules(agents_package.__path__):
+                module_name = module_info.name
 
-            if module_name.startswith("_") or module_name in skipped_modules:
-                continue
+                if module_name.startswith("_") or module_name in skipped_modules:
+                    continue
 
-            try:
-                import_module(f"friday.agents.{module_name}")
-            except ImportError as e:
-                logger.warning("Could not load agent module %s: %s", module_name, e)
+                try:
+                    import_module(f"friday.agents.{module_name}")
+                except ImportError as e:
+                    logger.warning("Could not load agent module %s: %s", module_name, e)
+
+        # Discover and load dynamic plugins
+        plugin_manager.discover_plugins()
 
     def _setup_memory(self) -> None:
         """Prepare long-term memory components for lazy initialization."""
@@ -225,7 +271,7 @@ class AgentRunner:
                     config=self.config,
                     tts=self.tts,
                 )
-                self.session.add_message("user", text)
+                self.session.add_message("user", text, llm=self.llm)
                 self.session.add_message("assistant", str(result))
                 await self._remember_exchange(text, str(result))
                 return result
@@ -237,7 +283,10 @@ class AgentRunner:
         return await self._fallback_to_llm(text)
 
     async def _fallback_to_llm(self, text: str) -> str:
-        """Use the local LLM when no specific command is triggered."""
+        """Use the local LLM when no specific command is triggered, with MCP tool support."""
+        from .mcp import mcp_client
+        import json
+        
         logger.info("No command match. Falling back to LLM.")
         if self.llm is None:
             return "The local LLM engine is unavailable. Install the required dependencies and start Ollama to enable free-form chat."
@@ -249,14 +298,58 @@ class AgentRunner:
             insert_at = 1 if messages and messages[0].role == "system" else 0
             messages.insert(insert_at, memory_message)
         
-        try:
-            response = await self.llm.chat(messages)
-            content = response.content
+        self.session.add_message("user", text, llm=self.llm)
+        
+        tools = mcp_client.get_tools_for_llm()
+        if not tools:
+            tools = None
             
-            self.session.add_message("user", text)
-            self.session.add_message("assistant", content)
-            await self._remember_exchange(text, content)
-            return content
+        try:
+            # ReAct / Tool Loop
+            max_iterations = 5
+            for _ in range(max_iterations):
+                response = await self.llm.chat(messages, tools=tools)
+                content = response.content
+                tool_calls = response.tool_calls
+                
+                if tool_calls:
+                    # Assistant chose to call tools
+                    messages.append(Message(role="assistant", content=content))
+                    for tool_call in tool_calls:
+                        func_name = tool_call.get("function", {}).get("name")
+                        func_args_str = tool_call.get("function", {}).get("arguments", "{}")
+                        try:
+                            # Ollama sometimes returns string args, sometimes dict
+                            if isinstance(func_args_str, str):
+                                args = json.loads(func_args_str)
+                            else:
+                                args = func_args_str
+                            
+                            logger.info(f"LLM executing tool: {func_name} with args {args}")
+                            tool_result = await mcp_client.call_tool(func_name, args)
+                            
+                            # Ensure tool result is a string
+                            if isinstance(tool_result, dict) or isinstance(tool_result, list):
+                                tool_result_str = json.dumps(tool_result)
+                            else:
+                                tool_result_str = str(tool_result)
+                                
+                            messages.append(Message(role="tool", content=tool_result_str))
+                        except Exception as e:
+                            logger.error(f"Tool execution failed: {e}")
+                            messages.append(Message(role="tool", content=f"Error executing tool: {str(e)}"))
+                    continue # Loop back to LLM with tool responses
+                else:
+                    # No more tool calls, we have our final answer
+                    self.session.add_message("assistant", content)
+                    await self._remember_exchange(text, content)
+                    return content
+            
+            # If max iterations reached
+            final_msg = "I've reached my thinking limit on this task."
+            self.session.add_message("assistant", final_msg, llm=self.llm)
+            return final_msg
+            
         except Exception as e:
             logger.error(f"LLM fallback failed: {e}")
             return f"I'm sorry, my brain is feeling a bit foggy: {str(e)}"

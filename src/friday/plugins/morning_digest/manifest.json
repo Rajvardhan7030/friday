@@ -1,0 +1,7 @@
+{
+  "name": "morning_digest",
+  "version": "0.1.0",
+  "description": "Morning Digest Agent.",
+  "author": "Friday Core",
+  "entry_point": "friday.plugins.morning_digest.main"
+}

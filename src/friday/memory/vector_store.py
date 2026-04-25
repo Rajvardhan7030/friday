@@ -53,30 +53,33 @@ class VectorStore:
         try:
             # Generate embeddings - still one by one but more robust
             embeddings = []
-            for doc in documents:
+            valid_docs = []
+            valid_metadatas = []
+            valid_ids = []
+            
+            for i, doc in enumerate(documents):
                 emb = await self.llm.embed(doc)
                 if not emb:
                     logger.warning(f"Failed to generate embedding for document: {doc[:50]}...")
-                    # ChromaDB requires embeddings if we provide them, 
-                    # so we might need a dummy if one fails, or skip.
-                    # For now, we skip the whole batch or use empty list.
                     continue
+                
                 embeddings.append(emb)
+                valid_docs.append(doc)
+                if metadatas:
+                    valid_metadatas.append(metadatas[i])
+                if ids:
+                    valid_ids.append(ids[i])
+                else:
+                    valid_ids.append(f"doc_{len(valid_ids)}")
 
             if not embeddings:
                 return
 
-            # Adjust metadatas and ids if some embeddings were skipped
-            if len(embeddings) < len(documents):
-                logger.warning("Some documents failed embedding and were skipped.")
-                # Simple adjustment: this logic is slightly flawed if middle docs fail
-                # but for now we assume it's better than crashing.
-
             self.collection.add(
                 embeddings=embeddings,
-                documents=documents[:len(embeddings)],
-                metadatas=metadatas[:len(embeddings)] if metadatas else None,
-                ids=ids[:len(embeddings)] if ids else [f"doc_{i}" for i in range(len(embeddings))]
+                documents=valid_docs,
+                metadatas=valid_metadatas if valid_metadatas else None,
+                ids=valid_ids
             )
         except Exception as e:
             logger.error(f"Failed to add documents to vector store: {e}")

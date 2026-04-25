@@ -1,0 +1,7 @@
+{
+  "name": "research_agent",
+  "version": "0.1.0",
+  "description": "Research Agent with ReAct loop.",
+  "author": "Friday Core",
+  "entry_point": "friday.plugins.research.main"
+}

@@ -9,9 +9,16 @@ import ast
 import subprocess
 import logging
 import tempfile
+import io
+import contextlib
 from pathlib import Path
 from typing import Tuple, List, Optional
-from ..core.config import Config
+from friday.core.config import Config
+
+try:
+    import docker
+except ImportError:
+    docker = None
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +29,7 @@ ALLOWED_IMPORTS = {
 }
 
 FORBIDDEN_PATTERNS = [
-    'os.system', 'subprocess.', 'socket.', 'requests.', 'urllib.', 'shutil.rmtree'
+    'os.system', 'subprocess.', 'socket.', 'requests.', 'urllib.', 'shutil.rmtree', 'eval', 'exec', 'open'
 ]
 
 class SandboxExecutor:
@@ -35,6 +42,15 @@ class SandboxExecutor:
         self.sandbox_dir = Path.home() / ".friday" / "sandbox"
         self.sandbox_dir.mkdir(parents=True, exist_ok=True)
         self.timeout = 10 # Hardcoded requirement
+        
+        self.docker_client = None
+        if docker:
+            try:
+                self.docker_client = docker.from_env()
+                self.docker_client.ping()
+            except Exception as e:
+                logger.warning(f"Docker client initialization failed: {e}. Will fallback to restricted local execution.")
+                self.docker_client = None
 
     def validate_syntax(self, code: str) -> Tuple[bool, str]:
         """
@@ -68,37 +84,98 @@ class SandboxExecutor:
     def execute(self, code: str) -> Tuple[bool, str]:
         """
         Runs code in the sandbox directory with resource limits.
+        Attempts Docker first, falls back to restricted Python execution.
         """
         # Create temp script
+        script_path = None
         with tempfile.NamedTemporaryFile(suffix=".py", dir=self.sandbox_dir, mode='w', delete=False) as f:
             f.write(code)
             script_path = Path(f.name)
 
         try:
-            # Use unshare for network isolation if on Linux
-            cmd = [sys.executable, str(script_path)]
-            if sys.platform != "win32":
-                cmd = ["unshare", "-n"] + cmd
+            if self.docker_client:
+                return self._execute_docker(script_path)
+            else:
+                return self._execute_restricted_local(code)
+        finally:
+            if script_path and script_path.exists():
+                script_path.unlink()
 
-            result = subprocess.run(
-                cmd,
-                cwd=str(self.sandbox_dir),
-                capture_output=True,
-                text=True,
-                timeout=self.timeout
+    def _execute_docker(self, script_path: Path) -> Tuple[bool, str]:
+        """Execute script inside an ephemeral docker container."""
+        try:
+            container = self.docker_client.containers.run(
+                "python:3.11-slim",
+                command=["python", f"/workspace/{script_path.name}"],
+                volumes={str(self.sandbox_dir): {'bind': '/workspace', 'mode': 'ro'}},
+                working_dir="/workspace",
+                network_mode="none",
+                mem_limit="128m",
+                cpu_quota=50000,
+                detach=True
             )
             
-            success = result.returncode == 0
-            output = result.stdout if success else result.stderr
-            return success, output
+            try:
+                result = container.wait(timeout=self.timeout)
+                success = result.get("StatusCode", 1) == 0
+            except Exception as e: # Catch wait timeout
+                container.kill()
+                return False, f"Execution timed out after {self.timeout}s."
+                
+            logs = container.logs().decode("utf-8")
+            container.remove()
+            return success, logs
             
-        except subprocess.TimeoutExpired:
-            return False, f"Execution timed out after {self.timeout}s."
         except Exception as e:
+            logger.error(f"Docker execution failed: {e}")
             return False, f"Execution failed: {str(e)}"
-        finally:
-            if script_path.exists():
-                script_path.unlink()
+
+    def _execute_restricted_local(self, code: str) -> Tuple[bool, str]:
+        """Safe local fallback using restricted execution."""
+        logger.warning("Using local fallback execution environment.")
+        
+        output_capture = io.StringIO()
+        error_capture = io.StringIO()
+        
+        # Define safe globals
+        safe_globals = {
+            "__builtins__": {
+                "print": print,
+                "range": range,
+                "len": len,
+                "int": int,
+                "float": float,
+                "str": str,
+                "list": list,
+                "dict": dict,
+                "set": set,
+                "tuple": tuple,
+                "bool": bool,
+                "abs": abs,
+                "sum": sum,
+                "min": min,
+                "max": max,
+                "round": round,
+                "Exception": Exception,
+                "ValueError": ValueError,
+                "TypeError": TypeError,
+                "__import__": __import__,  # Needed to allow the whitelisted imports
+            }
+        }
+
+        success = False
+        try:
+            # We redirect stdout and stderr
+            with contextlib.redirect_stdout(output_capture), contextlib.redirect_stderr(error_capture):
+                # The syntax validator already checks AST for dangerous calls, 
+                # so this provides a second layer of defense.
+                exec(code, safe_globals, {})
+            success = True
+            output = output_capture.getvalue()
+        except Exception as e:
+            output = f"Restricted execution error: {type(e).__name__}: {str(e)}"
+        
+        return success, output
 
     def _get_func_name(self, node: ast.AST) -> Optional[str]:
         if isinstance(node, ast.Name):

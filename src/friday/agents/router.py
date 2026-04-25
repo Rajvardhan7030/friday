@@ -5,6 +5,7 @@ Orchestrates intent detection and routing to specialized agents.
 
 import logging
 import json
+import re
 from typing import Dict, Any, List, Optional, Type
 from .base import BaseAgent, Context, AgentResult
 from ..llm.engine import LLMEngine, Message

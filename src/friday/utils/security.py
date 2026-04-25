@@ -79,12 +79,8 @@ def run_sandboxed_code(
             elif backend == "unshare":
                 isolation_error = _validate_unshare_support()
                 if isolation_error:
-                    was_fallback = True
-                    fallback_reason = isolation_error
-                    logger.warning(f"Unshare isolation failed: {isolation_error}. Falling back to basic process isolation.")
-                    # We continue without unshare, but resource limits (preexec_fn) still apply below
-                else:
-                    cmd = ["unshare", "-n"] + cmd
+                    return False, isolation_error
+                cmd = ["unshare", "-n"] + cmd
 
         # Execution flags
         kwargs: Dict[str, Any] = {

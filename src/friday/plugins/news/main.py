@@ -3,7 +3,7 @@
 import logging
 import xml.etree.ElementTree as ET
 from typing import Dict, Any, List
-from .base import BaseSkill, SkillResult
+from friday.skills.base import BaseSkill, SkillResult
 
 try:
     import httpx
@@ -65,3 +65,6 @@ class NewsSkill(BaseSkill):
         except Exception as e:
             logger.error(f"Failed to parse news RSS: {e}")
         return headlines
+
+# Register MCP tool
+NewsSkill().register_mcp()

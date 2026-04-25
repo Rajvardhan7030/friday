@@ -208,8 +208,10 @@ class LocalEngine(LLMEngine):
             stream=stream
         )
         self._current_model = model
-        content = response.get('message', {}).get('content', "")
-        return LLMResponse(content=content, raw_response=response, usage={})
+        message_data = response.get('message', {})
+        content = message_data.get('content', "")
+        tool_calls = message_data.get('tool_calls', None)
+        return LLMResponse(content=content, raw_response=response, usage={}, tool_calls=tool_calls)
 
     async def _embed_with_model(self, model: str, text: str) -> List[float]:
         response = await self._client.embeddings(model=model, prompt=text)

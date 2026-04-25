@@ -315,7 +315,6 @@ async def friday_status():
     console.print(Panel(table, expand=False))
 
 async def friday_doctor():
-# ... (rest of the file)
     """Perform a system health check."""
     config = Config()
     console.print(Panel("[bold blue]FRIDAY System Doctor[/bold blue]", expand=False))
@@ -349,7 +348,7 @@ async def friday_doctor():
 
     # 4. Check Audio Devices
     try:
-        from .voice.stt import ignore_stderr
+        from .utils.logging import ignore_stderr
         with ignore_stderr():
             mics = STTEngine.list_microphones()
         if mics:

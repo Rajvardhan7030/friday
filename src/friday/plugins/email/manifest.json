@@ -1,0 +1,7 @@
+{
+  "name": "email_skill",
+  "version": "0.1.0",
+  "description": "Email connector skill with IMAP support.",
+  "author": "Friday Core",
+  "entry_point": "friday.plugins.email.main"
+}

@@ -2,7 +2,7 @@
 
 import logging
 from typing import Dict, Any, List
-from .base import BaseSkill, SkillResult
+from friday.skills.base import BaseSkill, SkillResult
 
 logger = logging.getLogger(__name__)
 
@@ -30,3 +30,6 @@ class CalendarSkill(BaseSkill):
             data=mock_events,
             message="Mock mode: Found 3 events for today."
         )
+
+# Register MCP tool
+CalendarSkill().register_mcp()

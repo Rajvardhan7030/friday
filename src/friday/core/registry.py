@@ -7,6 +7,9 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+# To maintain compatibility, we'll auto-register legacy commands as plugins
+from .plugin import plugin_manager, PluginManifest
+
 @dataclass
 class Command:
     """Metadata for a registered command."""
@@ -31,6 +34,19 @@ class CommandRegistry:
             self._commands.append(command)
             # Sort by priority (higher first)
             self._commands.sort(key=lambda x: x.priority, reverse=True)
+            
+            # Compatibility wrapper: auto-register as a legacy plugin if not already tracked
+            plugin_name = f"legacy_command_{name.lower().replace(' ', '_')}"
+            if plugin_name not in plugin_manager.plugins:
+                manifest = PluginManifest(
+                    name=plugin_name,
+                    version="0.1.0",
+                    description=f"Legacy command wrapper for {name}",
+                    author="Friday Core",
+                    entry_point=func.__module__
+                )
+                plugin_manager.plugins[plugin_name] = manifest
+
             return func
         return decorator
 

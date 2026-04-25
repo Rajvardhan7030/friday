@@ -5,7 +5,7 @@ import imaplib
 import email
 from email.header import decode_header
 from typing import Dict, Any, List
-from .base import BaseSkill, SkillResult
+from friday.skills.base import BaseSkill, SkillResult
 
 logger = logging.getLogger(__name__)
 
@@ -97,3 +97,6 @@ class EmailSkill(BaseSkill):
                     mail.logout()
                 except:
                     pass
+
+# Register MCP tool
+EmailSkill().register_mcp()

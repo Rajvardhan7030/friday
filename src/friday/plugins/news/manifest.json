@@ -1,0 +1,7 @@
+{
+  "name": "news_skill",
+  "version": "0.1.0",
+  "description": "RSS/Atom news aggregator skill.",
+  "author": "Friday Core",
+  "entry_point": "friday.plugins.news.main"
+}

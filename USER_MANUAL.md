@@ -113,4 +113,6 @@ NEWS_API_KEY=your_key_here
 
 ## 🛡️ Privacy & Safety
 - **Offline First**: FRIDAY does not upload your voice or text to any servers. 
+- **Docker Sandbox**: When you ask FRIDAY to write or run code, she does it in a secure "Sandbox." For maximum security, we highly recommend installing [Docker](https://www.docker.com/). If Docker is installed, FRIDAY will automatically run all code inside an isolated, ephemeral container that cannot access your private files or network. If Docker is unavailable, she will fall back to a restricted Python execution environment.
+ur voice or text to any servers. 
 - **Sandbox**: When you ask FRIDAY to write or run code, she does it in a "Sandbox." This is a restricted environment that prevents the code from accessing your private files or damaging your system.

@@ -18,13 +18,14 @@
 Follow these steps to bring FRIDAY to life on your computer.
 
 ### 1. Prerequisites
-Before installing FRIDAY, you need two things:
+Before installing FRIDAY, you need:
 1. **Python (3.10 or newer)**: Download from [python.org](https://www.python.org/downloads/).
 2. **Ollama**: This is the "brain" that runs the AI. Download from [ollama.com](https://ollama.com).
    - Once installed, open your terminal/command prompt and run:
      ```bash
      ollama pull mistral
      ```
+3. **Docker (Optional but Recommended)**: Required for maximum security when FRIDAY runs code. Download from [docker.com](https://www.docker.com/).
 
 ### 2. Installation
 Open your terminal (Command Prompt on Windows, Terminal on Mac/Linux) and run these commands:
@@ -71,6 +72,12 @@ friday ask "How do I make a perfect omelette?"
 
 ## 🛠️ System Health
 If something isn't working right, run the "Doctor" command:
+```bash
+friday doctor
+```
+
+For more detailed instructions, check out the [USER_MANUAL.md](USER_MANUAL.md).
+ight, run the "Doctor" command:
 ```bash
 friday doctor
 ```
