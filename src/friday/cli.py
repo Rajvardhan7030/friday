@@ -135,18 +135,28 @@ def extract_voice_output_flag(args: List[str]) -> tuple[bool, List[str]]:
 
 
 async def voice_download():
-    """Download and extract voice models."""
+    """Download and extract voice models based on configuration."""
     from .core.config import download_model
     import zipfile
     config = Config()
     
+    selected_tts_model = config.get("voice.tts.model")
+    
+    # Map model names to their URLs
+    tts_urls = {
+        "en_GB-jenny_dioco-medium": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/jenny_dioco/medium/en_GB-jenny_dioco-medium.onnx",
+        "en_GB-alan-medium": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx"
+    }
+    
+    url = tts_urls.get(selected_tts_model, tts_urls["en_GB-jenny_dioco-medium"])
+    
     models = {
-        "TTS (Piper)": (
-            "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/jenny_dioco/medium/en_GB-jenny_dioco-medium.onnx",
+        f"TTS ({selected_tts_model})": (
+            url,
             Path(config.get("voice.tts.model_path"))
         ),
         "TTS Config": (
-            "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/jenny_dioco/medium/en_GB-jenny_dioco-medium.onnx.json",
+            url + ".json",
             Path(config.get("voice.tts.model_path")).with_suffix(".onnx.json")
         ),
         "STT (Vosk)": (
@@ -214,6 +224,95 @@ async def friday_config(args: List[str]):
         console.print("[yellow]Usage:[/yellow]")
         console.print("  friday config list")
         console.print("  friday config set <key> <value>")
+
+async def friday_init():
+    """Interactive initialization and hardware auto-tuning."""
+    from .core.hardware import get_hardware_profile
+    from rich.prompt import Confirm
+    
+    console.print(Panel(
+        "[bold blue]FRIDAY System Initialization[/bold blue]\n"
+        "[dim]Setting up your local AI assistant for optimal performance.[/dim]",
+        expand=False
+    ))
+
+    # 1. Hardware Detection
+    with console.status("[bold green]Probing hardware...[/bold green]"):
+        profile = get_hardware_profile()
+    
+    console.print(f"• OS: [cyan]{profile.os}[/cyan]")
+    console.print(f"• RAM: [cyan]{profile.ram_gb:.1f} GB[/cyan]")
+    if profile.gpu_name:
+        console.print(f"• GPU: [cyan]{profile.gpu_name}[/cyan] ([green]{profile.gpu_vram_gb:.1f} GB VRAM[/green])")
+    else:
+        console.print("• GPU: [yellow]None detected[/yellow] (Using CPU)")
+
+    # 2. Model Recommendations
+    recs = profile.recommend_models()
+    console.print("\n[bold]Recommended Models:[/bold]")
+    console.print(f"  - Primary (Chat): [green]{recs['primary']}[/green]")
+    console.print(f"  - Fallback:       [green]{recs['fallback']}[/green]")
+    console.print(f"  - Embedding:      [green]{recs['embedding']}[/green]")
+
+    config = Config()
+    if Confirm.ask("\nApply these model recommendations?"):
+        config.set("llm.primary_model", recs['primary'], save=False)
+        config.set("llm.fallback_model", recs['fallback'], save=False)
+        # Note: Embedding model storage not yet standardized in config.yaml, 
+        # but we can add it for future-proofing.
+        config.set("llm.embedding_model", recs['embedding'], save=False)
+
+    # 3. Voice Selection
+    voice_choice = Prompt.ask(
+        "\nSelect Voice Model",
+        choices=["female", "male"],
+        default="female"
+    )
+    
+    if voice_choice == "male":
+        # Example male voice URL/Path - for now just change model name
+        config.set("voice.tts.model", "en_GB-alan-medium", save=False)
+        config.set("voice.tts.model_path", str(config.base_dir / "models" / "en_GB-alan-medium.onnx"), save=False)
+    else:
+        config.set("voice.tts.model", "en_GB-jenny_dioco-medium", save=False)
+        config.set("voice.tts.model_path", str(config.base_dir / "models" / "en_GB-jenny_dioco-medium.onnx"), save=False)
+
+    # 4. Persistence
+    config.save()
+    console.print("\n[bold green]Configuration saved successfully![/bold green]")
+
+    # 5. Optional Download
+    if Confirm.ask("\nWould you like to download the required models now?"):
+        await voice_download()
+        
+        # Add Ollama pull instructions
+        console.print("\n[bold blue]Next Steps:[/bold blue]")
+        console.print(f"Run the following to ensure LLMs are ready:")
+        console.print(f"  [cyan]ollama pull {config.get('llm.primary_model')}[/cyan]")
+        if config.get('llm.primary_model') != config.get('llm.fallback_model'):
+             console.print(f"  [cyan]ollama pull {config.get('llm.fallback_model')}[/cyan]")
+
+    console.print(Panel("[bold green]FRIDAY IS READY[/bold green]\nType [cyan]friday[/cyan] to begin.", expand=False))
+
+async def friday_status():
+    """Display a concise summary of the current configuration and system health."""
+    config = Config()
+    from rich.table import Table
+    
+    table = Table(title="FRIDAY System Status", show_header=False, box=None)
+    table.add_row("[bold]Models[/bold]")
+    table.add_row(f"  Primary:   [green]{config.get('llm.primary_model')}[/green]")
+    table.add_row(f"  Fallback:  [green]{config.get('llm.fallback_model')}[/green]")
+    table.add_row(f"  Embedding: [green]{config.get('llm.embedding_model')}[/green]")
+    
+    table.add_row("\n[bold]Voice[/bold]")
+    table.add_row(f"  TTS Model: [cyan]{config.get('voice.tts.model')}[/cyan]")
+    
+    table.add_row("\n[bold]Memory[/bold]")
+    status = "[green]Enabled[/green]" if config.get("memory.enabled") else "[red]Disabled[/red]"
+    table.add_row(f"  Long-term: {status}")
+    
+    console.print(Panel(table, expand=False))
 
 async def friday_doctor():
 # ... (rest of the file)
@@ -296,6 +395,22 @@ def app():
             return
         except Exception as e:
             print(f"Download task failed: {e}")
+            sys.exit(1)
+
+    if normalized_args[:1] == ["init"]:
+        try:
+            asyncio.run(friday_init())
+            return
+        except Exception as e:
+            print(f"Init failed: {e}")
+            sys.exit(1)
+
+    if normalized_args[:1] == ["status"]:
+        try:
+            asyncio.run(friday_status())
+            return
+        except Exception as e:
+            print(f"Status failed: {e}")
             sys.exit(1)
 
     if normalized_args[:1] == ["doctor"]:

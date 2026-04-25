@@ -78,6 +78,7 @@ class Config:
                 "engine": "ollama",
                 "primary_model": "mistral:latest",
                 "fallback_model": "llama3:latest",
+                "embedding_model": "nomic-embed-text:latest",
                 "base_url": "http://localhost:11434",
             },
         }

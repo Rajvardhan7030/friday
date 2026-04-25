@@ -4,7 +4,7 @@ import psutil
 import platform
 import logging
 import subprocess
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
 try:
@@ -23,16 +23,35 @@ class HardwareProfile:
     gpu_vram_gb: Optional[float]
     gpu_name: Optional[str]
 
-    def recommend_model(self) -> str:
-        """Recommend a model based on hardware profile."""
-        if self.gpu_vram_gb and self.gpu_vram_gb >= 8:
-            return "qwen2.5-coder:7b"
-        elif self.ram_gb >= 16:
-            return "llama3.1:8b"
-        elif self.ram_gb >= 8:
-            return "tinyllama"
+    def recommend_models(self) -> Dict[str, str]:
+        """Recommend a suite of models based on hardware profile."""
+        recommendations = {
+            "primary": "mistral:latest",
+            "fallback": "llama3:latest",
+            "embedding": "nomic-embed-text:latest"
+        }
+
+        # Logic for primary and fallback
+        if self.gpu_vram_gb:
+            if self.gpu_vram_gb >= 12:
+                recommendations["primary"] = "llama3.1:8b"
+                recommendations["fallback"] = "mistral:latest"
+            elif self.gpu_vram_gb >= 6:
+                recommendations["primary"] = "mistral:latest"
+                recommendations["fallback"] = "tinyllama:latest"
+            else:
+                recommendations["primary"] = "tinyllama:latest"
+                recommendations["fallback"] = "tinyllama:latest"
         else:
-            return "tinyllama"
+            # CPU fallback
+            if self.ram_gb >= 16:
+                recommendations["primary"] = "mistral:latest"
+                recommendations["fallback"] = "tinyllama:latest"
+            else:
+                recommendations["primary"] = "tinyllama:latest"
+                recommendations["fallback"] = "tinyllama:latest"
+
+        return recommendations
 
 def get_hardware_profile() -> HardwareProfile:
     """Detect and return hardware profile."""
