@@ -1,81 +1,83 @@
-# 🎙️ FRIDAY: Your Personal Offline AI Assistant
+# 🎙️ FRIDAY v2: Self-Improving Multi-Platform AI Agent
 
-**FRIDAY** (Female Replacement Intelligent Digital Assistant Youth) is a privacy-first, local AI assistant that lives on your computer. Unlike other assistants, FRIDAY doesn't send your data to the cloud—everything stays on your machine.
-
----
-
-## ✨ Key Features
-- **Privacy First**: 100% local processing. No data leaves your computer.
-- **Voice Interaction**: Talk to FRIDAY and hear her speak back.
-- **Memory**: FRIDAY remembers your previous conversations and can even "read" your local documents to help you better.
-- **Code Assistant**: Ask FRIDAY to create files or run small scripts for you.
-- **Daily Briefings**: Get a "Morning Digest" of your news and schedule (if configured).
+**FRIDAY** (Female Replacement Intelligent Digital Assistant Youth) has evolved. Version 2 is a production-ready, self-improving personal AI agent that operates across multiple platforms and grows its own capabilities.
 
 ---
 
-## 🚀 Easy Setup (For Everyone)
-
-### 1. Install Ollama (The "Brain")
-FRIDAY needs a local brain to think. We recommend **Ollama**:
-1. Download Ollama from [ollama.com](https://ollama.com).
-2. Install it and run it.
-3. Open your terminal and type:
-   ```bash
-   ollama pull mistral
-   ```
-
-### 2. Install FRIDAY
-Open your terminal and run:
-```bash
-pip install -e .
-```
-
-### 3. Download Voice Models
-To let FRIDAY speak and listen, run this command:
-```bash
-friday voice download
-```
-
-### 4. Check if everything is ready
-Run the "doctor" command to make sure FRIDAY is healthy:
-```bash
-friday doctor
-```
+## ✨ v2 Key Features
+- **Multi-Platform Gateways**: Seamlessly interact via Terminal (TUI), Telegram, Discord, or Slack.
+- **Self-Improving Skill System**: FRIDAY can dynamically generate, execute, and repair Python skills to handle new tasks.
+- **Advanced Memory Architecture**: 
+  - **Structured Memory**: SQLite-based conversation logs.
+  - **Semantic Memory**: ChromaDB vector store for long-term recall and contextual awareness.
+- **Flexible LLM Providers**: Support for OpenRouter (Gemini, Claude, Llama 3), OpenAI, and Ollama (Local).
+- **Task Scheduler**: Built-in cron-based scheduling for automated reports and tasks.
+- **Modern Tech Stack**: Python 3.11+, Pydantic v2, Asyncio, and Rich TUI.
 
 ---
 
-## 💬 How to Use FRIDAY
+## 🚀 Quick Start
 
-### The Interactive Chat
-Simply type `friday` in your terminal to start a conversation.
-- Type `help` to see what she can do.
-- Type `/voice on` to start talking to her with your microphone.
-- Type `/voice off` to go back to typing.
-- Type `/exit` when you're done.
-
-### One-Off Questions
-If you just want a quick answer without staying in the chat:
+### 1. Installation
 ```bash
-friday ask "What is the capital of France?"
+git clone https://github.com/your-repo/friday.git
+cd friday
+pip install -r requirements.txt
 ```
-To hear the answer out loud:
+
+### 2. Configuration
+Copy the example environment file and fill in your API keys:
 ```bash
-friday ask -v "Tell me a joke"
+cp .env.example .env
+```
+Edit `~/.friday/config.yaml` to configure your preferred LLM provider and enable gateways.
+
+### 3. Launching FRIDAY
+**Start the Interactive TUI:**
+```bash
+python -m friday.main chat
+```
+
+**Start the Gateways (Telegram, Discord, etc.):**
+```bash
+python -m friday.main gateway --telegram --discord
 ```
 
 ---
 
-## 🛠️ Common Tasks
-- **Greeting**: "Hi Friday!"
-- **Identity**: "Who are you?"
-- **Coding**: "Create a file named hello.py that prints 'Hello World'"
-- **Daily Briefing**: "Give me my morning digest"
-- **Clear Memory**: "Clear history"
+## 🛠️ CLI Usage
+FRIDAY comes with a powerful CLI for one-off tasks:
+- `friday chat`: Launch the terminal UI.
+- `friday ask "question"`: Quick query to the agent.
+- `friday gateway start --telegram`: Launch specific platform gateways.
+- `friday skill list`: View all current capabilities.
+- `friday schedule add "Daily Report" --cron "0 9 * * *" --prompt "Summarize my day"`: Schedule recurring tasks.
 
 ---
 
-## 🔒 Your Privacy & Security
-FRIDAY is designed to be safe. When you ask her to write code or create files, she does so in a "Sandbox"—a restricted area of your computer that prevents the code from accessing your network or private data without your knowledge.
+## 🧠 The Self-Improvement Loop
+When FRIDAY encounters a task she doesn't have a skill for, she can:
+1. **Design**: Write a new Python skill in `friday/skills/`.
+2. **Implement**: Register the skill in the index.
+3. **Execute**: Run the code immediately to fulfill the request.
+4. **Repair**: If the code fails, she analyzes the error and regenerates the skill.
 
-## ⚙️ Advanced Configuration
-Technical users can find settings in `~/.friday/config.yaml` to change models, voice speed, or folder locations.
+---
+
+## ⚙️ Configuration Example (`config.yaml`)
+```yaml
+llm:
+  provider: openrouter
+  model: google/gemini-2.5-flash-preview
+  api_key: ${OPENROUTER_API_KEY}
+
+gateways:
+  telegram:
+    enabled: true
+    token: ${TELEGRAM_BOT_TOKEN}
+```
+
+---
+
+## 🛡️ Security & Integrity
+FRIDAY isolates skill execution and uses environment-based configuration to keep your secrets safe. Always review the skills FRIDAY creates in the `friday/skills/` directory.

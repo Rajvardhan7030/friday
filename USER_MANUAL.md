@@ -1,73 +1,77 @@
-# FRIDAY User Manual: A Simple Guide
+# FRIDAY v2 User Manual: The Agent's Guide
 
-Welcome! This guide will help you get the most out of **FRIDAY**, your personal AI assistant. No technical degree required!
-
----
-
-## 🏁 Getting Started
-
-### 1. How to talk to FRIDAY
-Open your terminal (Command Prompt on Windows, Terminal on Mac/Linux) and type:
-`friday`
-
-You will see a prompt like this: `>>>`. This is where you type your questions!
-
-### 2. Voice Mode (Talking and Listening)
-If you'd rather talk than type:
-1. Type `/voice on` in the chat and press Enter.
-2. Wait for FRIDAY to say "Voice mode enabled."
-3. Speak clearly into your microphone. FRIDAY will listen, think, and speak back to you!
-4. To stop talking and go back to typing, type `/voice off`.
+Welcome to **FRIDAY v2**, your self-improving AI companion. This manual covers everything from basic chat to managing her new autonomous capabilities.
 
 ---
 
-## 🤖 What can I ask FRIDAY?
+## 🏁 Interface Modes
 
-FRIDAY can help with many things. Here are some examples of what you can type:
+### 1. Terminal UI (TUI)
+Run `python -m friday.main chat` for the full experience.
+- **Left Pane**: Your conversation history.
+- **Right Pane**: System status and memory recall insights.
+- **Input**: Type naturally at the bottom.
 
-| What you want | What to type/say |
-| :--- | :--- |
-| **Get Help** | `help` |
-| **Friendly Hello** | `Hi Friday!` |
-| **Check Identity** | `Who are you?` |
-| **Write a file** | `Create a file named shopping_list.txt` |
-| **Write a script** | `Write a python script that calculates the area of a circle` |
-| **Daily Briefing** | `Morning digest` |
-| **Clear History** | `Clear history` |
-
----
-
-## 🧠 Memory: How FRIDAY remembers you
-
-FRIDAY has two types of memory:
-1. **Short-Term**: She remembers the conversation you are having *right now*. If you say "My name is John," and then ask "What is my name?", she will know.
-2. **Long-Term**: If enabled, FRIDAY can "read" files in her workspace folder (`~/.friday/workspace`) to help answer your questions about your own documents.
-
-To start fresh and make her forget the current conversation, just type:
-`clear history`
+### 2. Messaging Platforms
+If configured, FRIDAY can live in your Telegram, Discord, or Slack.
+- She responds to direct messages and mentions.
+- **Context Persistence**: FRIDAY remembers you across platforms thanks to her centralized memory system.
 
 ---
 
-## ❓ Troubleshooting (When things go wrong)
+## 🤖 Skills: Teaching FRIDAY New Tricks
 
-### "Friday is not responding"
-- Make sure **Ollama** is running on your computer.
-- Check your internet connection (only needed for the initial setup/downloads).
+FRIDAY is no longer limited to built-in commands. She can write her own code.
 
-### "I can't hear Friday"
-- Make sure your speakers are turned on and the volume is up.
-- Run `friday voice download` to ensure the voice files are installed.
+### Using Existing Skills
+Type `/skills` or ask "What can you do?" to see a list of registered skills. To use one, just ask:
+- *"Check the weather in London"* (Uses weather skill)
+- *"Send an email to Boss"* (Uses email skill)
 
-### "Friday can't hear me"
-- Check that your microphone is plugged in and selected as the default input in your system settings.
-- Type `/voice on` to make sure she is listening.
-
-### Running a Health Check
-If you are having trouble, run this command in your terminal:
-`friday doctor`
-This will tell you if any parts of FRIDAY are "sick" or missing.
+### Automated Skill Creation
+If you ask for something complex, FRIDAY might say:
+*"I don't have a skill for that yet. Let me create one..."*
+She will write a Python script, save it, and execute it. You can see these in the `friday/skills/` folder.
 
 ---
 
-## 🛡️ Staying Safe
-FRIDAY is built with security in mind. When she runs code to help you with a task, she does it in a "Sandbox." This is like a virtual room that she can't leave, so the code can't accidentally delete your important files or spy on your other apps.
+## 🧠 Memory & Context
+
+FRIDAY has a "Semantic Brain" (ChromaDB).
+- **Recalling the Past**: She automatically recalls relevant snippets from past conversations to provide better answers.
+- **Cross-Platform**: If you tell her something on Telegram, she will remember it when you talk to her on Discord.
+
+---
+
+## 📅 Scheduling Tasks
+
+You can automate FRIDAY using the built-in scheduler:
+```bash
+friday schedule add "MorningBrief" --cron "0 8 * * *" --prompt "What is on my calendar today?"
+```
+- This will run every day at 8:00 AM.
+- The result will be sent to your primary gateway.
+
+---
+
+## ⚙️ Troubleshooting
+
+### LLM Connectivity
+If FRIDAY isn't responding, check your `.env` file and `~/.friday/config.yaml`. 
+- Ensure your `OPENROUTER_API_KEY` or `OPENAI_API_KEY` is valid.
+- If using **Ollama**, ensure the service is running locally.
+
+### Gateway Issues
+If a bot is offline:
+- Verify the bot tokens in your config.
+- Run `python -m friday.main gateway --<platform>` and check the terminal logs for errors.
+
+### Skill Failures
+If a skill crashes:
+- FRIDAY will try to fix it herself.
+- If she fails, you can manually delete the file in `friday/skills/` and ask her to try again.
+
+---
+
+## 🛡️ Safety Note
+FRIDAY v2 can execute Python code she writes. While she tries to be safe, always monitor her activity if you ask her to perform high-risk system operations.
