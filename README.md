@@ -1,6 +1,6 @@
 # 🎙️ FRIDAY: Your Personal Offline AI Assistant
 
-**FRIDAY** (Female Replacement Intelligent Digital Assistant Youth) is a privacy-first, local AI assistant that lives on your computer. Unlike other assistants, FRIDAY doesn't send your data to the cloud—everything stays on your machine.
+**FRIDAY** (Female Replacement Intelligent Digital Assistant Youth) is a privacy-first, local AI assistant that lives on your computer. Unlike other assistants (like Siri or Alexa), FRIDAY doesn't send your data to the cloud—everything stays on your machine.
 
 ---
 
@@ -9,29 +9,26 @@
 - **🗣️ Talk & Listen**: Fully voice-enabled interaction.
 - **🧠 Local Memory**: She remembers your past chats and can "read" your local documents.
 - **⚡ Fast & Free**: No subscriptions, no internet required (after setup).
-- **🛡️ Safe Coding**: Runs scripts and code in a secure "Sandbox" to protect your files.
+- **🛡️ Safe Zone**: Runs scripts and code in a secure "Sandbox" to protect your files.
 
 ---
 
-## 🚀 Getting Started (Easy Setup)
+## 🚀 Getting Started
 
 Follow these steps to bring FRIDAY to life on your computer.
 
-### 1. Prerequisites
+### 1. Simple Prerequisites
 Before installing FRIDAY, you need:
-1. **Python (3.10 or newer)**: Download from [python.org](https://www.python.org/downloads/).
-2. **Ollama**: This is the "brain" that runs the AI. Download from [ollama.com](https://ollama.com).
-   - Once installed, open your terminal/command prompt and run:
-     ```bash
-     ollama pull mistral
-     ```
-3. **Docker (Optional but Recommended)**: Required for maximum security when FRIDAY runs code. Download from [docker.com](https://www.docker.com/).
+1.  **Python (3.10 or newer)**: Think of this as the engine that runs FRIDAY. Download it from [python.org](https://www.python.org/downloads/).
+2.  **Ollama**: This is the "brain" that lets FRIDAY think and talk. Download it from [ollama.com](https://ollama.com).
+    - *Tip: Once installed, keep it running in your taskbar.*
+3.  **Docker (Optional)**: For extra safety when you ask FRIDAY to write code, install [Docker](https://www.docker.com/). It keeps her coding in a "sealed box."
 
 ### 2. Installation
-Open your terminal (Command Prompt on Windows, Terminal on Mac/Linux) and run these commands:
+Open your terminal (Command Prompt on Windows, Terminal on Mac/Linux) and run:
 
 ```bash
-# Clone this repository (or download and unzip it)
+# Get the code
 git clone https://github.com/your-repo/friday.git
 cd friday
 
@@ -44,47 +41,83 @@ Run the automatic setup assistant. It will check your hardware and help you down
 ```bash
 friday init
 ```
+- Select your **LLM Backend** (Use `1` for the default Local Ollama).
+- Choose a **Male or Female** voice.
+- Let it download the voice files for you.
 
 ---
 
 ## 💬 How to Use FRIDAY
 
-### ⌨️ The Interactive Chat
-Type `friday` to start a conversation.
-- Type **`/voice on`** to start talking with your microphone.
-- Type **`/voice off`** to go back to typing.
-- Type **`/exit`** to say goodbye.
+### ⌨️ Starting a Conversation
+Type `friday` to start chatting.
+- **Voice Mode**: Type `/voice on` to start talking. Type `/voice off` to go back to typing.
+- **Exit**: Type `/exit` or `/quit` when you're done.
 
 ### ❓ Quick Questions
 Ask a quick question without entering full chat mode:
 ```bash
 friday ask "How do I make a perfect omelette?"
 ```
-*Add `-v` at the end to hear her speak the answer!*
+*Add `-v` to the end (e.g., `friday ask "Hello" -v`) to hear her speak the answer!*
 
-### 📋 Common Commands
-- **"Who are you?"** - FRIDAY introduces herself.
-- **"Create a file named notes.txt"** - She creates a file for you.
-- **"Morning digest"** - Get your daily summary (if configured).
-- **"Clear history"** - Make her forget the current conversation.
-
----
-
-## 🏗️ Technical Highlights
-
-FRIDAY is built with modern engineering standards to ensure speed, safety, and reliability:
-
-- **🛡️ Hardened Sandboxing**: All code execution is isolated in restricted subprocesses or Docker containers. Every script undergoes static analysis to prevent unauthorized imports or dangerous system calls.
-- **🚀 Optimized Vector Memory**: Uses high-performance batch embedding to index your local documents up to 10x faster than traditional sequential methods.
-- **🔄 Resilient LLM Routing**: Features an intelligent failover system that automatically switches to secondary models if your primary choice is unavailable, and gracefully "upgrades" back once service is restored.
-- **🔒 Thread-Safe Semantic Memory**: Background summarization tasks are synchronized with async locks to maintain perfect conversation context, even during rapid-fire interactions.
+### 📋 Common Commands & Tasks
+| What to Ask | What FRIDAY Does |
+| :--- | :--- |
+| **"Who are you?"** | Introduces herself and her purpose. |
+| **"Create a file named notes.txt"** | Writes a new file to your computer safely. |
+| **"Morning digest"** | Gives you a summary of news or your schedule. |
+| **"Clear history"** | Makes her forget the current conversation. |
+| **"Write a Python script to..."** | Writes code for you and runs it in her "Safe Zone." |
 
 ---
 
-## 🛠️ System Health
-If something isn't working right, run the "Doctor" command:
+## 🛠️ Troubleshooting (Help!)
+
+If something isn't working right, don't worry! Here are the most common fixes:
+
+### ❓ FRIDAY is not responding or says "Connection Error"
+- **The Fix**: Make sure **Ollama** is running. Check your taskbar (Windows) or Menu Bar (Mac) for the Ollama icon. If it's closed, open it and try again.
+
+### ❓ "I can't hear anything"
+- **The Fix 1**: Run `friday voice download` to make sure the voice files are installed.
+- **The Fix 2**: Check your computer's volume and ensure your speakers are turned on.
+
+### ❓ "She can't hear me" (Microphone issues)
+- **The Fix 1**: Make sure your microphone is plugged in and set as the "Default" in your computer's sound settings.
+- **The Fix 2**: Run `friday doctor` to see if FRIDAY can find your microphone.
+
+### ❓ Linux Users: Sound errors
+- **The Fix**: If you see errors about "PyAudio" or "PortAudio," run this command:
+  ```bash
+  sudo apt-get install portaudio19-dev
+  ```
+
+### ❓ Still having trouble?
+Run the "Doctor" command for a full system health check:
 ```bash
 friday doctor
 ```
 
-For more detailed instructions, check out the [USER_MANUAL.md](USER_MANUAL.md).
+---
+
+## 🏗️ Technical Highlights (For the Curious)
+
+- **🛡️ Hardened Sandboxing**: All code execution is isolated in restricted subprocesses or Docker containers.
+- **🚀 Optimized Memory**: Uses high-performance batch embedding to index your local documents up to 10x faster.
+- **🔄 Resilient Routing**: Automatically switches to secondary models if your primary choice is unavailable.
+- **🔒 Thread-Safe**: Background tasks are synchronized to maintain perfect conversation context.
+
+---
+
+## 📧 Optional: Connecting Accounts
+
+To make FRIDAY even smarter (like reading your real emails for a Morning Digest), you can add your details to a `.env` file in the project folder:
+
+```text
+IMAP_SERVER=imap.gmail.com
+IMAP_USER=your-email@gmail.com
+IMAP_PASSWORD=your-app-password
+```
+
+For more support, please check the GitHub issues page.
