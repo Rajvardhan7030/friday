@@ -6,6 +6,9 @@ import tempfile
 import logging
 import sys
 import shutil
+import ast
+import io
+import contextlib
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 
@@ -25,6 +28,52 @@ from ..core.exceptions import SandboxError
 
 logger = logging.getLogger(__name__)
 
+# Security Hardening
+ALLOWED_IMPORTS = {
+    'os', 'pathlib', 'json', 'csv', 'datetime', 're', 
+    'math', 'random', 'string', 'shutil', 'collections', 'itertools'
+}
+
+FORBIDDEN_PATTERNS = [
+    'os.system', 'subprocess.', 'socket.', 'requests.', 'urllib.', 'shutil.rmtree', 'eval', 'exec', 'open'
+]
+
+def validate_python_code(code: str) -> Tuple[bool, str]:
+    """
+    Performs static analysis to check for syntax errors and forbidden imports/calls.
+    """
+    try:
+        tree = ast.parse(code)
+        
+        # Check for forbidden imports/calls
+        for node in ast.walk(tree):
+            # Check imports
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                names = [n.name for n in node.names] if isinstance(node, ast.Import) else [node.module]
+                for name in names:
+                    if name and name.split('.')[0] not in ALLOWED_IMPORTS:
+                        return False, f"Forbidden import: {name}. Only {ALLOWED_IMPORTS} are allowed."
+            
+            # Check calls for forbidden patterns
+            if isinstance(node, ast.Call):
+                func_name = _get_func_name(node.func)
+                for pattern in FORBIDDEN_PATTERNS:
+                    if func_name and pattern in func_name:
+                        return False, f"Forbidden function call: {func_name}"
+
+        return True, "Syntax and safety check passed."
+    except SyntaxError as e:
+        return False, f"Syntax Error: {str(e)}"
+    except Exception as e:
+        return False, f"Validation Error: {str(e)}"
+
+def _get_func_name(node: ast.AST) -> Optional[str]:
+    if isinstance(node, ast.Name):
+        return node.id
+    elif isinstance(node, ast.Attribute):
+        val = _get_func_name(node.value)
+        return f"{val}.{node.attr}" if val else node.attr
+    return None
 
 def run_sandboxed_code(
     code: str, 
@@ -41,6 +90,11 @@ def run_sandboxed_code(
     Returns:
         Tuple[bool, str]: (success, output_or_error_message)
     """
+    # 1. Static Validation
+    valid, msg = validate_python_code(code)
+    if not valid:
+        return False, msg
+
     timeout = config.get("security.sandbox_timeout", 30) if config else 30
     backend = config.get("security.sandbox_backend", "unshare") if config else "unshare"
     

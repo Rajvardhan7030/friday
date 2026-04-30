@@ -2,6 +2,7 @@
 
 import logging
 import pkgutil
+import asyncio
 from importlib import import_module
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -11,6 +12,7 @@ from .plugin import plugin_manager
 from .config import Config
 from .exceptions import ModelNotFoundError
 from ..llm.local import LocalEngine
+from ..llm.api import APIEngine
 from ..llm.engine import Message
 from ..memory.document_indexer import DocumentIndexer
 from ..memory.vector_store import VectorStore
@@ -34,6 +36,7 @@ class Session:
         self.recent_messages = recent_messages
         self.summary_max_chars = summary_max_chars
         self.history_summary = ""
+        self._summarize_lock = asyncio.Lock()
 
     def add_message(self, role: str, content: str, llm: Optional['LocalEngine'] = None):
         """Add a message to the session history."""
@@ -43,7 +46,6 @@ class Session:
             archived_messages = self.history[:overflow]
             self.history = self.history[overflow:]
             if llm:
-                import asyncio
                 # Trigger semantic summarization in background
                 asyncio.create_task(self._summarize_messages(archived_messages, llm))
             else:
@@ -53,8 +55,9 @@ class Session:
         """Condense evicted messages into a structured semantic JSON summary."""
         import json
 
-        lines = [f"{msg['role'].capitalize()}: {msg['content']}" for msg in archived_messages]
-        chat_text = "\n".join(lines)
+        async with self._summarize_lock:
+            lines = [f"{msg['role'].capitalize()}: {msg['content']}" for msg in archived_messages]
+            chat_text = "\n".join(lines)
 
         current = self.history_summary if self.history_summary else "{}"
         prompt = (
@@ -130,11 +133,19 @@ class AgentRunner:
         self._memory_disabled_reason: Optional[str] = None
 
         try:
-            self.llm = LocalEngine(
-                primary_model=config.get("llm.primary_model"),
-                fallback_model=config.get("llm.fallback_model"),
-                base_url=config.get("llm.base_url")
-            )
+            engine_type = config.get("llm.engine", "ollama")
+            if engine_type == "openai":
+                self.llm = APIEngine(
+                    model_name=config.get("llm.primary_model"),
+                    api_key=config.get("llm.api_key"),
+                    base_url=config.get("llm.api_base_url", "https://api.openai.com/v1")
+                )
+            else:
+                self.llm = LocalEngine(
+                    primary_model=config.get("llm.primary_model"),
+                    fallback_model=config.get("llm.fallback_model"),
+                    base_url=config.get("llm.base_url")
+                )
         except Exception as e:
             logger.warning("LLM engine unavailable during startup: %s", e)
             self.llm = None

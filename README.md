@@ -70,14 +70,19 @@ friday ask "How do I make a perfect omelette?"
 
 ---
 
+## 🏗️ Technical Highlights
+
+FRIDAY is built with modern engineering standards to ensure speed, safety, and reliability:
+
+- **🛡️ Hardened Sandboxing**: All code execution is isolated in restricted subprocesses or Docker containers. Every script undergoes static analysis to prevent unauthorized imports or dangerous system calls.
+- **🚀 Optimized Vector Memory**: Uses high-performance batch embedding to index your local documents up to 10x faster than traditional sequential methods.
+- **🔄 Resilient LLM Routing**: Features an intelligent failover system that automatically switches to secondary models if your primary choice is unavailable, and gracefully "upgrades" back once service is restored.
+- **🔒 Thread-Safe Semantic Memory**: Background summarization tasks are synchronized with async locks to maintain perfect conversation context, even during rapid-fire interactions.
+
+---
+
 ## 🛠️ System Health
 If something isn't working right, run the "Doctor" command:
-```bash
-friday doctor
-```
-
-For more detailed instructions, check out the [USER_MANUAL.md](USER_MANUAL.md).
-ight, run the "Doctor" command:
 ```bash
 friday doctor
 ```

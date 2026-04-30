@@ -45,8 +45,20 @@ class LocalEngine(LLMEngine):
         formatted_messages = self._format_messages(messages)
         tried_models: List[str] = []
 
-        # 1. Try known working model first if available
-        if self._known_chat_model:
+        # 1. Always try primary model first
+        try:
+            res = await self._chat_with_model(self._primary_model, formatted_messages, tools, stream)
+            self._known_chat_model = self._primary_model
+            return res
+        except Exception as e:
+            if not self._is_model_not_found_error(e):
+                logger.error(f"Ollama chat error with {self._primary_model}: {e}")
+                raise LLMError(f"Local LLM engine failed: {e}") from e
+            logger.warning(f"Primary model '{self._primary_model}' not found in Ollama.")
+            tried_models.append(self._primary_model)
+
+        # 2. Try known working model if it's different and available
+        if self._known_chat_model and self._known_chat_model not in tried_models:
             try:
                 return await self._chat_with_model(self._known_chat_model, formatted_messages, tools, stream)
             except Exception as e:
@@ -54,22 +66,21 @@ class LocalEngine(LLMEngine):
                     raise
                 self._known_chat_model = None
 
-        # 2. Try configured models
+        # 3. Try configured fallback model
+        if self._fallback_model and self._fallback_model not in tried_models:
+            try:
+                res = await self._chat_with_model(self._fallback_model, formatted_messages, tools, stream)
+                self._known_chat_model = self._fallback_model
+                return res
+            except Exception as e:
+                if not self._is_model_not_found_error(e):
+                    logger.error(f"Ollama chat error with {self._fallback_model}: {e}")
+                    raise LLMError(f"Local LLM engine failed: {e}") from e
+                logger.warning(f"Fallback model '{self._fallback_model}' not found in Ollama.")
+                tried_models.append(self._fallback_model)
+
+        # 4. Last resort: any available model
         try:
-            for model in self._model_attempt_order():
-                try:
-                    res = await self._chat_with_model(model, formatted_messages, tools, stream)
-                    self._known_chat_model = model
-                    return res
-                except Exception as e:
-                    if not self._is_model_not_found_error(e):
-                        logger.error(f"Ollama chat error with {model}: {e}")
-                        raise LLMError(f"Local LLM engine failed: {e}") from e
-
-                    logger.warning(f"Model '{model}' not found in Ollama.")
-                    tried_models.append(model)
-
-            # 3. Last resort: any available model
             available = await self.get_available_models()
             last_resort_models = [m for m in available if m not in tried_models]
             for model in last_resort_models:
@@ -84,14 +95,14 @@ class LocalEngine(LLMEngine):
                         raise LLMError(f"Local LLM engine failed: {e}") from e
                     logger.warning(f"Last-resort model '{model}' not found in Ollama.")
                     tried_models.append(model)
+        except Exception as e:
+            logger.error(f"Failed to list models for last resort: {e}")
 
-            missing = tried_models or [self._primary_model]
-            raise LLMError(
-                f"Model '{missing[-1]}' not found. "
-                f"Please run 'ollama pull {missing[-1]}' to install it."
-            )
-        except LLMError:
-            raise
+        missing = tried_models or [self._primary_model]
+        raise LLMError(
+            f"Model '{missing[-1]}' not found. "
+            f"Please run 'ollama pull {missing[-1]}' to install it."
+        )
 
     async def get_available_models(self) -> List[str]:
         """List models available in the local Ollama instance."""
@@ -122,8 +133,20 @@ class LocalEngine(LLMEngine):
         """Generate local embeddings."""
         tried_models: List[str] = []
 
-        # 1. Try known working model first
-        if self._known_embed_model:
+        # 1. Always try primary model first
+        try:
+            res = await self._embed_with_model(self._primary_model, text)
+            self._known_embed_model = self._primary_model
+            return res
+        except Exception as e:
+            if not self._is_model_not_found_error(e):
+                logger.error(f"Ollama embedding error with {self._primary_model}: {e}")
+                raise LLMError(f"Failed to generate embeddings: {e}") from e
+            logger.warning(f"Primary model '{self._primary_model}' not found for embeddings.")
+            tried_models.append(self._primary_model)
+
+        # 2. Try known working model if available
+        if self._known_embed_model and self._known_embed_model not in tried_models:
             try:
                 return await self._embed_with_model(self._known_embed_model, text)
             except Exception as e:
@@ -131,22 +154,21 @@ class LocalEngine(LLMEngine):
                     raise
                 self._known_embed_model = None
 
-        # 2. Try configured models
+        # 3. Try configured fallback model
+        if self._fallback_model and self._fallback_model not in tried_models:
+            try:
+                res = await self._embed_with_model(self._fallback_model, text)
+                self._known_embed_model = self._fallback_model
+                return res
+            except Exception as e:
+                if not self._is_model_not_found_error(e):
+                    logger.error(f"Ollama embedding error with {self._fallback_model}: {e}")
+                    raise LLMError(f"Failed to generate embeddings: {e}") from e
+                logger.warning(f"Fallback model '{self._fallback_model}' not found for embeddings.")
+                tried_models.append(self._fallback_model)
+
+        # 4. Last resort
         try:
-            for model in self._model_attempt_order():
-                try:
-                    res = await self._embed_with_model(model, text)
-                    self._known_embed_model = model
-                    return res
-                except Exception as e:
-                    if not self._is_model_not_found_error(e):
-                        logger.error(f"Ollama embedding error with {model}: {e}")
-                        raise LLMError(f"Failed to generate embeddings: {e}") from e
-
-                    logger.warning(f"Model '{model}' not found for embeddings.")
-                    tried_models.append(model)
-
-            # 3. Last resort
             available = await self.get_available_models()
             last_resort_models = [m for m in available if m not in tried_models]
             for model in last_resort_models:
@@ -161,14 +183,20 @@ class LocalEngine(LLMEngine):
                         raise LLMError(f"Failed to generate embeddings: {e}") from e
                     logger.warning(f"Last-resort embedding model '{model}' not found in Ollama.")
                     tried_models.append(model)
+        except Exception as e:
+            logger.error(f"Failed to list models for last resort embeddings: {e}")
 
-            missing = tried_models or [self._primary_model]
-            raise LLMError(
-                f"Model '{missing[-1]}' not found. "
-                f"Please run 'ollama pull {missing[-1]}' to install it."
-            )
-        except LLMError:
-            raise
+        missing = tried_models or [self._primary_model]
+        raise LLMError(
+            f"Model '{missing[-1]}' not found. "
+            f"Please run 'ollama pull {missing[-1]}' to install it."
+        )
+
+    async def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """Generate local embeddings in batch using concurrency."""
+        import asyncio
+        tasks = [self.embed(text) for text in texts]
+        return await asyncio.gather(*tasks)
 
     def _format_messages(self, messages: List[Message]) -> List[Dict[str, Any]]:
         """Convert Message objects to the format expected by Ollama."""
@@ -201,12 +229,25 @@ class LocalEngine(LLMEngine):
         tools: Optional[List[Dict[str, Any]]],
         stream: bool,
     ) -> LLMResponse:
-        response = await self._client.chat(
-            model=model,
-            messages=formatted_messages,
-            tools=tools,
-            stream=stream
-        )
+        try:
+            response = await self._client.chat(
+                model=model,
+                messages=formatted_messages,
+                tools=tools,
+                stream=stream
+            )
+        except Exception as e:
+            if tools and "does not support tools" in str(e).lower():
+                logger.warning(f"Model '{model}' does not support tools. Retrying without tools.")
+                response = await self._client.chat(
+                    model=model,
+                    messages=formatted_messages,
+                    tools=None,
+                    stream=stream
+                )
+            else:
+                raise
+
         self._current_model = model
         message_data = response.get('message', {})
         content = message_data.get('content', "")

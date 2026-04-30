@@ -13,6 +13,7 @@ from friday.plugins.research.main import ResearchAgent
 from friday.agents.system_commands import clear_handler
 from friday.core.agent_runner import Session
 from friday.core.agent_runner import AgentRunner
+from friday.core.config import Config
 from friday.core.registry import registry
 from friday.llm.engine import Message
 from friday.llm.local import LocalEngine
@@ -125,7 +126,6 @@ async def test_local_engine_retries_primary_on_each_chat(monkeypatch):
     assert engine.model_name == "fallback"
 
 
-@pytest.mark.skip(reason="flaky test")
 @pytest.mark.asyncio
 async def test_local_engine_uses_primary_again_when_it_becomes_available(monkeypatch):
     fake_ollama = MagicMock()
@@ -345,30 +345,33 @@ async def test_agent_runner_gracefully_disables_memory_when_initialization_fails
     assert runner._memory_disabled_reason == "chromadb unavailable"
 
 
-@pytest.mark.skip(reason="broken test")
-@pytest.mark.asyncio
-async def test_agent_runner_returns_clean_message_on_sandbox_failure(monkeypatch, tmp_path):
-    runner = AgentRunner.__new__(AgentRunner)
-    runner.config = MagicMock()
-    runner.config.base_dir = tmp_path / "friday-home"
-    runner.config.get.side_effect = lambda key, default=None: {
-        "memory.auto_remember_conversations": False,
-    }.get(key, default)
-    runner.session = Session()
-    runner.llm = MagicMock()
-    runner.llm.chat = AsyncMock(return_value=type("Response", (), {"content": "```python\nprint('ok')\n```"})())
-    runner.tts = None
-    runner.vector_store = None
-    runner.document_indexer = None
-    runner._memory_ready = True
-    runner._memory_disabled_reason = None
+from friday.agents.code_assistant import CodeAssistantAgent
+from friday.agents.sandbox_executor import SandboxExecutor
 
+@pytest.mark.asyncio
+async def test_code_assistant_returns_clean_message_on_sandbox_failure(monkeypatch, tmp_path):
+    config = Config()
+    llm = MagicMock()
+    # Mock LLM to return a simple code block
+    llm.chat = AsyncMock(side_effect=[
+        type("Response", (), {"content": "Step 1: print ok"})(), # Plan
+        type("Response", (), {"content": "```python\nprint('ok')\n```"})(), # Generate 1
+        type("Response", (), {"content": "```python\nprint('ok')\n```"})(), # Generate 2
+        type("Response", (), {"content": "```python\nprint('ok')\n```"})(), # Generate 3
+    ])
+    
+    executor = SandboxExecutor(config)
+    agent = CodeAssistantAgent(llm, executor=executor)
+    
+    # Mock the low-level sandbox call to fail
     monkeypatch.setattr(
-        "friday.agents.code_assistant.run_sandboxed_code",
+        "friday.agents.sandbox_executor.run_sandboxed_code",
         lambda code, workspace_dir, config=None: (False, "Error: network-isolated sandbox unavailable"),
     )
 
-    result = await AgentRunner.handle_input(runner, "create file named demo.py")
+    ctx = Context(user_query="create file named demo.py")
+    result = await agent.run(ctx)
 
-    assert "sandboxed execution failed" in result
-    assert "network-isolated sandbox unavailable" in result
+    assert result.success is False
+    assert "Last Output:" in result.content
+    assert "network-isolated sandbox unavailable" in result.content

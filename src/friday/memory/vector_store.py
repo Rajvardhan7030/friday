@@ -51,34 +51,18 @@ class VectorStore:
             return
 
         try:
-            # Generate embeddings - still one by one but more robust
-            embeddings = []
-            valid_docs = []
-            valid_metadatas = []
-            valid_ids = []
+            # Generate embeddings in batch
+            embeddings = await self.llm.embed_batch(documents)
             
-            for i, doc in enumerate(documents):
-                emb = await self.llm.embed(doc)
-                if not emb:
-                    logger.warning(f"Failed to generate embedding for document: {doc[:50]}...")
-                    continue
-                
-                embeddings.append(emb)
-                valid_docs.append(doc)
-                if metadatas:
-                    valid_metadatas.append(metadatas[i])
-                if ids:
-                    valid_ids.append(ids[i])
-                else:
-                    valid_ids.append(f"doc_{len(valid_ids)}")
-
             if not embeddings:
                 return
 
+            valid_ids = ids if ids else [f"doc_{self.collection.count() + i}" for i in range(len(documents))]
+
             self.collection.add(
                 embeddings=embeddings,
-                documents=valid_docs,
-                metadatas=valid_metadatas if valid_metadatas else None,
+                documents=documents,
+                metadatas=metadatas if metadatas else None,
                 ids=valid_ids
             )
         except Exception as e:

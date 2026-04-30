@@ -58,6 +58,10 @@ friday ask "What is the distance to the moon?"
 
 ## 🛠️ Troubleshooting (FAQ)
 
+### ❓ "Local LLM engine failed: ... does not support tools"
+- **Cause**: Some smaller AI models (like `tinyllama`) do not support advanced tool-calling features required for complex tasks.
+- **Fix**: FRIDAY automatically detects this and will now retry your request seamlessly without tools, allowing the conversation to continue. However, for full functionality, we recommend using more capable models like `mistral` or `llama3`.
+
 ### ❓ "Friday is not responding" or "Connection Error"
 - **Cause**: Ollama is likely not running.
 - **Fix**: Open the Ollama application on your computer. If it's already open, try restarting it.

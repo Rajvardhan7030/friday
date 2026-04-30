@@ -75,11 +75,13 @@ class Config:
                 "auto_remember_conversations": True,
             },
             "llm": {
-                "engine": "ollama",
+                "engine": "ollama",  # "ollama" or "openai"
                 "primary_model": "mistral:latest",
                 "fallback_model": "llama3:latest",
                 "embedding_model": "nomic-embed-text:latest",
                 "base_url": "http://localhost:11434",
+                "api_key": "",
+                "api_base_url": "https://api.openai.com/v1",
             },
         }
 

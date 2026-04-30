@@ -33,6 +33,11 @@ class LLMEngine(ABC):
         pass
 
     @abstractmethod
+    async def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings for a list of strings."""
+        pass
+
+    @abstractmethod
     def is_available(self) -> bool:
         """Check if the engine is available and ready."""
         pass

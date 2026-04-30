@@ -232,37 +232,57 @@ async def friday_init():
     
     console.print(Panel(
         "[bold blue]FRIDAY System Initialization[/bold blue]\n"
-        "[dim]Setting up your local AI assistant for optimal performance.[/dim]",
+        "[dim]Setting up your personal AI assistant.[/dim]",
         expand=False
     ))
 
-    # 1. Hardware Detection
-    with console.status("[bold green]Probing hardware...[/bold green]"):
-        profile = get_hardware_profile()
-    
-    console.print(f"• OS: [cyan]{profile.os}[/cyan]")
-    console.print(f"• RAM: [cyan]{profile.ram_gb:.1f} GB[/cyan]")
-    if profile.gpu_name:
-        console.print(f"• GPU: [cyan]{profile.gpu_name}[/cyan] ([green]{profile.gpu_vram_gb:.1f} GB VRAM[/green])")
-    else:
-        console.print("• GPU: [yellow]None detected[/yellow] (Using CPU)")
-
-    # 2. Model Recommendations
-    recs = profile.recommend_models()
-    console.print("\n[bold]Recommended Models:[/bold]")
-    console.print(f"  - Primary (Chat): [green]{recs['primary']}[/green]")
-    console.print(f"  - Fallback:       [green]{recs['fallback']}[/green]")
-    console.print(f"  - Embedding:      [green]{recs['embedding']}[/green]")
-
     config = Config()
-    if Confirm.ask("\nApply these model recommendations?"):
-        config.set("llm.primary_model", recs['primary'], save=False)
-        config.set("llm.fallback_model", recs['fallback'], save=False)
-        # Note: Embedding model storage not yet standardized in config.yaml, 
-        # but we can add it for future-proofing.
-        config.set("llm.embedding_model", recs['embedding'], save=False)
 
-    # 3. Voice Selection
+    # 1. Choose LLM Backend
+    engine_choice = Prompt.ask(
+        "\n[bold]Select LLM Backend[/bold]",
+        choices=["Local Ollama", "API Key (OpenAI-compatible)"],
+        default="Local Ollama"
+    )
+
+    if engine_choice == "API Key (OpenAI-compatible)":
+        config.set("llm.engine", "openai", save=False)
+        api_key = Prompt.ask("Enter your API Key", password=True)
+        config.set("llm.api_key", api_key, save=False)
+        
+        model_name = Prompt.ask("Enter Model Name", default="gpt-4o")
+        config.set("llm.primary_model", model_name, save=False)
+        
+        api_url = Prompt.ask("Enter API Base URL (optional)", default="https://api.openai.com/v1")
+        config.set("llm.api_base_url", api_url, save=False)
+        
+        console.print("[green]API Backend configured.[/green]")
+    else:
+        config.set("llm.engine", "ollama", save=False)
+        # 2. Hardware Detection (Ollama Only)
+        with console.status("[bold green]Probing hardware...[/bold green]"):
+            profile = get_hardware_profile()
+        
+        console.print(f"• OS: [cyan]{profile.os}[/cyan]")
+        console.print(f"• RAM: [cyan]{profile.ram_gb:.1f} GB[/cyan]")
+        if profile.gpu_name:
+            console.print(f"• GPU: [cyan]{profile.gpu_name}[/cyan] ([green]{profile.gpu_vram_gb:.1f} GB VRAM[/green])")
+        else:
+            console.print("• GPU: [yellow]None detected[/yellow] (Using CPU)")
+
+        # 3. Model Recommendations
+        recs = profile.recommend_models()
+        console.print("\n[bold]Recommended Models:[/bold]")
+        console.print(f"  - Primary (Chat): [green]{recs['primary']}[/green]")
+        console.print(f"  - Fallback:       [green]{recs['fallback']}[/green]")
+        console.print(f"  - Embedding:      [green]{recs['embedding']}[/green]")
+
+        if Confirm.ask("\nApply these model recommendations?"):
+            config.set("llm.primary_model", recs['primary'], save=False)
+            config.set("llm.fallback_model", recs['fallback'], save=False)
+            config.set("llm.embedding_model", recs['embedding'], save=False)
+
+    # 4. Voice Selection
     voice_choice = Prompt.ask(
         "\nSelect Voice Model",
         choices=["female", "male"],
@@ -270,29 +290,31 @@ async def friday_init():
     )
     
     if voice_choice == "male":
-        # Example male voice URL/Path - for now just change model name
         config.set("voice.tts.model", "en_GB-alan-medium", save=False)
         config.set("voice.tts.model_path", str(config.base_dir / "models" / "en_GB-alan-medium.onnx"), save=False)
     else:
         config.set("voice.tts.model", "en_GB-jenny_dioco-medium", save=False)
         config.set("voice.tts.model_path", str(config.base_dir / "models" / "en_GB-jenny_dioco-medium.onnx"), save=False)
 
-    # 4. Persistence
+    # 5. Persistence
     config.save()
     console.print("\n[bold green]Configuration saved successfully![/bold green]")
 
-    # 5. Optional Download
-    if Confirm.ask("\nWould you like to download the required models now?"):
-        await voice_download()
-        
-        # Add Ollama pull instructions
-        console.print("\n[bold blue]Next Steps:[/bold blue]")
-        console.print(f"Run the following to ensure LLMs are ready:")
-        console.print(f"  [cyan]ollama pull {config.get('llm.primary_model')}[/cyan]")
-        if config.get('llm.primary_model') != config.get('llm.fallback_model'):
-             console.print(f"  [cyan]ollama pull {config.get('llm.fallback_model')}[/cyan]")
+    # 6. Optional Download
+    if config.get("llm.engine") == "ollama":
+        if Confirm.ask("\nWould you like to download the required voice models now?"):
+            await voice_download()
+            
+            # Add Ollama pull instructions
+            console.print("\n[bold blue]Next Steps:[/bold blue]")
+            console.print(f"Run the following to ensure LLMs are ready:")
+            console.print(f"  [cyan]ollama pull {config.get('llm.primary_model')}[/cyan]")
+    else:
+        if Confirm.ask("\nWould you like to download the required voice models now?"):
+            await voice_download()
 
     console.print(Panel("[bold green]FRIDAY IS READY[/bold green]\nType [cyan]friday[/cyan] to begin.", expand=False))
+
 
 async def friday_status():
     """Display a concise summary of the current configuration and system health."""
@@ -300,7 +322,10 @@ async def friday_status():
     from rich.table import Table
     
     table = Table(title="FRIDAY System Status", show_header=False, box=None)
-    table.add_row("[bold]Models[/bold]")
+    table.add_row("[bold]Engine[/bold]")
+    table.add_row(f"  Type:      [cyan]{config.get('llm.engine')}[/cyan]")
+    
+    table.add_row("\n[bold]Models[/bold]")
     table.add_row(f"  Primary:   [green]{config.get('llm.primary_model')}[/green]")
     table.add_row(f"  Fallback:  [green]{config.get('llm.fallback_model')}[/green]")
     table.add_row(f"  Embedding: [green]{config.get('llm.embedding_model')}[/green]")
@@ -327,15 +352,24 @@ async def friday_doctor():
         status = "[green]OK[/green]" if mode == "0o600" else f"[yellow]WARN (mode {mode})[/yellow]"
         console.print(f"• Logging: {status} ({log_file})")
     
-    # 2. Check LLM (Ollama)
-    from .llm.local import LocalEngine
-    llm = LocalEngine(config.get("llm.primary_model"), config.get("llm.fallback_model"), config.get("llm.base_url"))
-    if await llm.is_available_async():
-        models = await llm.get_available_models()
-        model_list = ", ".join(models) if models else "None"
-        console.print(f"• LLM (Ollama): [green]ONLINE[/green] (Models: {model_list})")
+    # 2. Check LLM
+    engine_type = config.get("llm.engine")
+    if engine_type == "openai":
+        from .llm.api import APIEngine
+        llm = APIEngine(config.get("llm.primary_model"), config.get("llm.api_key"), config.get("llm.api_base_url"))
+        if await llm.is_available_async():
+            console.print(f"• LLM (API): [green]ONLINE[/green] (Model: {llm.model_name})")
+        else:
+            console.print("• LLM (API): [bold red]OFFLINE[/bold red] (Check API key or connectivity)")
     else:
-        console.print("• LLM (Ollama): [bold red]OFFLINE[/bold red] (Is Ollama running?)")
+        from .llm.local import LocalEngine
+        llm = LocalEngine(config.get("llm.primary_model"), config.get("llm.fallback_model"), config.get("llm.base_url"))
+        if await llm.is_available_async():
+            models = await llm.get_available_models()
+            model_list = ", ".join(models) if models else "None"
+            console.print(f"• LLM (Ollama): [green]ONLINE[/green] (Models: {model_list})")
+        else:
+            console.print("• LLM (Ollama): [bold red]OFFLINE[/bold red] (Is Ollama running?)")
 
     # 3. Check Voice Models
     tts_path = Path(config.get("voice.tts.model_path"))

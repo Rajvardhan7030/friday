@@ -24,34 +24,32 @@ class HardwareProfile:
     gpu_name: Optional[str]
 
     def recommend_models(self) -> Dict[str, str]:
-        """Recommend a suite of models based on hardware profile."""
         recommendations = {
-            "primary": "mistral:latest",
-            "fallback": "llama3:latest",
-            "embedding": "nomic-embed-text:latest"
-        }
+        "primary": "gemma3:4b",
+        "fallback": "gemma2:2b",
+        "embedding": "nomic-embed-text:latest"
+    }
 
-        # Logic for primary and fallback
-        if self.gpu_vram_gb:
-            if self.gpu_vram_gb >= 12:
-                recommendations["primary"] = "llama3.1:8b"
-                recommendations["fallback"] = "mistral:latest"
-            elif self.gpu_vram_gb >= 6:
-                recommendations["primary"] = "mistral:latest"
-                recommendations["fallback"] = "tinyllama:latest"
-            else:
-                recommendations["primary"] = "tinyllama:latest"
-                recommendations["fallback"] = "tinyllama:latest"
+    if self.gpu_vram_gb:
+        if self.gpu_vram_gb >= 8:
+            recommendations["primary"] = "gemma3:4b"
+            recommendations["fallback"] = "gemma2:2b"
+        elif self.gpu_vram_gb >= 4:
+            recommendations["primary"] = "gemma3:4b"
+            recommendations["fallback"] = "gemma2:2b"
         else:
-            # CPU fallback
-            if self.ram_gb >= 16:
-                recommendations["primary"] = "mistral:latest"
-                recommendations["fallback"] = "tinyllama:latest"
-            else:
-                recommendations["primary"] = "tinyllama:latest"
-                recommendations["fallback"] = "tinyllama:latest"
+            recommendations["primary"] = "gemma2:2b"
+            recommendations["fallback"] = "gemma2:2b"
+    else:
+        # CPU-only
+        if self.ram_gb >= 8:
+            recommendations["primary"] = "gemma3:4b"
+            recommendations["fallback"] = "gemma2:2b"
+        else:
+            recommendations["primary"] = "gemma2:2b"
+            recommendations["fallback"] = "gemma2:2b"
 
-        return recommendations
+    return recommendations
 
 def get_hardware_profile() -> HardwareProfile:
     """Detect and return hardware profile."""
