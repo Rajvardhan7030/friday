@@ -1,6 +1,7 @@
 """Local vector storage using ChromaDB."""
 
 import logging
+import uuid
 from typing import List, Dict, Any, Optional
 from ..llm.engine import LLMEngine
 
@@ -57,7 +58,7 @@ class VectorStore:
             if not embeddings:
                 return
 
-            valid_ids = ids if ids else [f"doc_{self.collection.count() + i}" for i in range(len(documents))]
+            valid_ids = ids if ids else [str(uuid.uuid4()) for _ in range(len(documents))]
 
             self.collection.add(
                 embeddings=embeddings,

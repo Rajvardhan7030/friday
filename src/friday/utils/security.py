@@ -1,14 +1,12 @@
 """Sandboxing helpers for secure code execution."""
 
 import os
-import subprocess
 import tempfile
 import logging
 import sys
 import shutil
 import ast
-import io
-import contextlib
+import asyncio
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 
@@ -34,32 +32,49 @@ ALLOWED_IMPORTS = {
     'math', 'random', 'string', 'shutil', 'collections', 'itertools'
 }
 
+FORBIDDEN_ATTRIBUTES = {
+    '__globals__', '__subclasses__', '__builtins__', '__code__', 
+    '__func__', '__self__', '__dict__', '__class__', '__mro__'
+}
+
 FORBIDDEN_PATTERNS = [
     'os.system', 'subprocess.', 'socket.', 'requests.', 'urllib.', 'shutil.rmtree', 'eval', 'exec', 'open'
 ]
 
 def validate_python_code(code: str) -> Tuple[bool, str]:
     """
-    Performs static analysis to check for syntax errors and forbidden imports/calls.
+    Performs robust static analysis to check for syntax errors and forbidden imports/calls/attributes.
     """
     try:
         tree = ast.parse(code)
         
-        # Check for forbidden imports/calls
+        # Check for forbidden imports/calls/attributes
         for node in ast.walk(tree):
-            # Check imports
+            # 1. Check imports
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 names = [n.name for n in node.names] if isinstance(node, ast.Import) else [node.module]
                 for name in names:
-                    if name and name.split('.')[0] not in ALLOWED_IMPORTS:
+                    if not name: continue
+                    root_module = name.split('.')[0]
+                    if root_module not in ALLOWED_IMPORTS:
                         return False, f"Forbidden import: {name}. Only {ALLOWED_IMPORTS} are allowed."
             
-            # Check calls for forbidden patterns
+            # 2. Check attribute access (prevents bypasses like os.__dict__['system'])
+            if isinstance(node, ast.Attribute):
+                if node.attr in FORBIDDEN_ATTRIBUTES:
+                    return False, f"Forbidden attribute access: {node.attr}"
+            
+            # 3. Check calls for forbidden patterns
             if isinstance(node, ast.Call):
                 func_name = _get_func_name(node.func)
-                for pattern in FORBIDDEN_PATTERNS:
-                    if func_name and pattern in func_name:
-                        return False, f"Forbidden function call: {func_name}"
+                if func_name:
+                    for pattern in FORBIDDEN_PATTERNS:
+                        if pattern in func_name:
+                            return False, f"Forbidden function call: {func_name}"
+                
+                # Check for dynamic attribute access via getattr/setattr
+                if isinstance(node.func, ast.Name) and node.func.id in ('getattr', 'setattr', 'delattr', 'hasattr'):
+                    return False, f"Forbidden built-in call: {node.func.id}"
 
         return True, "Syntax and safety check passed."
     except SyntaxError as e:
@@ -75,12 +90,13 @@ def _get_func_name(node: ast.AST) -> Optional[str]:
         return f"{val}.{node.attr}" if val else node.attr
     return None
 
-def run_sandboxed_code(
+async def run_sandboxed_code(
     code: str, 
     workspace_dir: Path, 
     config: Optional[Config] = None
 ) -> Tuple[bool, str]:
     """Execute Python code in a restricted subprocess with multi-platform support.
+    This function is asynchronous and does not block the event loop.
 
     Args:
         code (str): Python source code to execute.
@@ -106,8 +122,6 @@ def run_sandboxed_code(
         script_path = Path(f.name)
 
     process = None
-    was_fallback = False
-    fallback_reason = ""
     try:
         # Use current interpreter for consistency
         cmd = [sys.executable, str(script_path)]
@@ -131,18 +145,15 @@ def run_sandboxed_code(
                     "Install Docker or change 'security.sandbox_backend'."
                 )
             elif backend == "unshare":
-                isolation_error = _validate_unshare_support()
+                isolation_error = await _validate_unshare_support()
                 if isolation_error:
                     return False, isolation_error
                 cmd = ["unshare", "-n"] + cmd
 
         # Execution flags
         kwargs: Dict[str, Any] = {
-            "shell": False, 
-            "cwd": str(workspace_dir), 
-            "stdout": subprocess.PIPE, 
-            "stderr": subprocess.PIPE, 
-            "text": True
+            "stdout": asyncio.subprocess.PIPE, 
+            "stderr": asyncio.subprocess.PIPE, 
         }
         
         if os.name == "posix":
@@ -155,24 +166,19 @@ def run_sandboxed_code(
                     # Limit memory (128MB)
                     resource.setrlimit(resource.RLIMIT_AS, (128 * 1024 * 1024, 128 * 1024 * 1024))
                 kwargs["preexec_fn"] = preexec
-        else:
-            # Windows specific flags
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
 
-        process = subprocess.Popen(cmd, **kwargs)
+        process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
 
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
             success = process.returncode == 0
-            output = stdout if success else stderr
             
-            if was_fallback:
-                warning = f"Warning: Sandbox isolation was reduced. {fallback_reason}\n"
-                output = warning + output
+            output_bytes = stdout if success else stderr
+            output = output_bytes.decode('utf-8', errors='replace')
                 
             return success, output
             
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutExpired:
             _kill_process_tree(process.pid)
             return False, f"Error: Code execution timed out after {timeout} seconds."
 
@@ -188,7 +194,7 @@ def run_sandboxed_code(
                 logger.warning(f"Failed to cleanup script {script_path}: {e}")
 
 
-def _validate_unshare_support() -> Optional[str]:
+async def _validate_unshare_support() -> Optional[str]:
     """Return an error message if unshare-based isolation cannot be used."""
     if not shutil.which("unshare"):
         return (
@@ -197,8 +203,15 @@ def _validate_unshare_support() -> Optional[str]:
         )
 
     try:
-        subprocess.run(["unshare", "-n", "true"], check=True, capture_output=True)
-    except (subprocess.CalledProcessError, PermissionError) as exc:
+        proc = await asyncio.create_subprocess_exec(
+            "unshare", "-n", "true",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await proc.communicate()
+        if proc.returncode != 0:
+             return "Error: Network-isolated sandbox requested but 'unshare -n' failed."
+    except Exception as exc:
         return (
             "Error: Network-isolated sandbox requested but 'unshare -n' is not permitted "
             f"on this system: {exc}. Adjust permissions or choose a different sandbox backend."

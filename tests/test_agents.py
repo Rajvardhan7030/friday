@@ -366,9 +366,8 @@ async def test_code_assistant_returns_clean_message_on_sandbox_failure(monkeypat
     # Mock the low-level sandbox call to fail
     monkeypatch.setattr(
         "friday.agents.sandbox_executor.run_sandboxed_code",
-        lambda code, workspace_dir, config=None: (False, "Error: network-isolated sandbox unavailable"),
+        AsyncMock(return_value=(False, "Error: network-isolated sandbox unavailable")),
     )
-
     ctx = Context(user_query="create file named demo.py")
     result = await agent.run(ctx)
 

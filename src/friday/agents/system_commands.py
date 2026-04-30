@@ -9,7 +9,7 @@ from ..core.agent_runner import Session
     description="Show all available commands",
     usage="help"
 )
-async def help_handler(session: Session, **_kwargs):
+async def help_handler(session: Session, **kwargs):
     """Returns the help text for all registered commands."""
     return registry.get_help()
 
@@ -19,7 +19,7 @@ async def help_handler(session: Session, **_kwargs):
     description="Respond to greetings",
     usage="hello"
 )
-async def greeting_handler(session: Session, **_kwargs):
+async def greeting_handler(session: Session, **kwargs):
     """Responds to common greetings."""
     return "Hello! I am FRIDAY. How can I help you today?"
 
@@ -30,7 +30,7 @@ async def greeting_handler(session: Session, **_kwargs):
     usage="who are you?",
     priority=10
 )
-async def identity_handler(session: Session, **_kwargs):
+async def identity_handler(session: Session, **kwargs):
     """Returns a short description of Friday."""
     return "I am FRIDAY (Female Replacement Intelligent Digital Assistant Youth), your personal AI assistant. I run locally and prioritize your privacy."
 
@@ -40,7 +40,7 @@ async def identity_handler(session: Session, **_kwargs):
     description="Clear the current conversation history",
     usage="clear or clear history"
 )
-async def clear_handler(session: Session, **_kwargs):
+async def clear_handler(session: Session, **kwargs):
     """Resets the session history."""
     session.history = []
     return "Conversation history cleared."

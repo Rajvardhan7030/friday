@@ -67,7 +67,7 @@ class CodeAssistantAgent(BaseAgent):
                 continue
 
             # Step 4: Execute in Sandbox
-            success, output = self.executor.execute(state["code"])
+            success, output = await self.executor.execute(state["code"])
             state["success"] = success
             state["output"] = output
 

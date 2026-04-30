@@ -3,6 +3,7 @@
 import logging
 import pkgutil
 import asyncio
+import json
 from importlib import import_module
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -12,7 +13,7 @@ from .plugin import plugin_manager
 from .config import Config
 from .exceptions import ModelNotFoundError
 from ..llm.local import LocalEngine
-from ..llm.api import APIEngine
+from ..llm.api import create_api_engine
 from ..llm.engine import Message
 from ..memory.document_indexer import DocumentIndexer
 from ..memory.vector_store import VectorStore
@@ -53,40 +54,38 @@ class Session:
 
     async def _summarize_messages(self, archived_messages: List[Dict[str, str]], llm: 'LocalEngine') -> None:
         """Condense evicted messages into a structured semantic JSON summary."""
-        import json
-
         async with self._summarize_lock:
             lines = [f"{msg['role'].capitalize()}: {msg['content']}" for msg in archived_messages]
             chat_text = "\n".join(lines)
 
-        current = self.history_summary if self.history_summary else "{}"
-        prompt = (
-            "You are an AI assistant's memory manager. Analyze this conversation snippet "
-            "and update the current summary. The summary MUST be valid JSON containing "
-            "'user_preferences' (list), 'active_tasks' (list), and 'general_context' (string).\n\n"
-            f"Current Summary:\n{current}\n\n"
-            f"New Messages:\n{chat_text}\n\n"
-            "Return ONLY the updated JSON object. Do not include markdown blocks or extra text."
-        )
+            current = self.history_summary if self.history_summary else "{}"
+            prompt = (
+                "You are an AI assistant's memory manager. Analyze this conversation snippet "
+                "and update the current summary. The summary MUST be valid JSON containing "
+                "'user_preferences' (list), 'active_tasks' (list), and 'general_context' (string).\n\n"
+                f"Current Summary:\n{current}\n\n"
+                f"New Messages:\n{chat_text}\n\n"
+                "Return ONLY the updated JSON object. Do not include markdown blocks or extra text."
+            )
 
-        try:
-            res = await llm.chat([Message(role="system", content=prompt)])
-            content = res.content.strip()
-            if content.startswith("```json"):
-                content = content[7:]
-            elif content.startswith("```"):
-                content = content[3:]
-            if content.endswith("```"):
-                content = content[:-3]
-            content = content.strip()
+            try:
+                res = await llm.chat([Message(role="system", content=prompt)])
+                content = res.content.strip()
+                if content.startswith("```json"):
+                    content = content[7:]
+                elif content.startswith("```"):
+                    content = content[3:]
+                if content.endswith("```"):
+                    content = content[:-3]
+                content = content.strip()
 
-            # Verify JSON
-            json.loads(content)
-            self.history_summary = content
-            logger.info("Session semantic memory updated successfully.")
-        except Exception as e:
-            logger.warning(f"Semantic summarization failed, falling back to text: {e}")
-            self._append_to_summary(archived_messages)
+                # Verify JSON
+                json.loads(content)
+                self.history_summary = content
+                logger.info("Session semantic memory updated successfully.")
+            except Exception as e:
+                logger.warning(f"Semantic summarization failed, falling back to text: {e}")
+                self._append_to_summary(archived_messages)
 
     def build_llm_messages(self, user_input: str) -> List[Message]:
         """Build the message list for free-form chat with summarized context."""
@@ -135,10 +134,11 @@ class AgentRunner:
         try:
             engine_type = config.get("llm.engine", "ollama")
             if engine_type == "openai":
-                self.llm = APIEngine(
+                self.llm = create_api_engine(
                     model_name=config.get("llm.primary_model"),
                     api_key=config.get("llm.api_key"),
-                    base_url=config.get("llm.api_base_url", "https://api.openai.com/v1")
+                    base_url=config.get("llm.api_base_url", "https://api.openai.com/v1"),
+                    embedding_model_name=config.get("llm.embedding_model")
                 )
             else:
                 self.llm = LocalEngine(
@@ -183,6 +183,14 @@ class AgentRunner:
 
         # Discover and load dynamic plugins
         plugin_manager.discover_plugins()
+
+    async def aclose(self):
+        """Shutdown engines and close connections."""
+        if self.llm:
+            await self.llm.aclose()
+        if self.tts:
+            await self.tts.aclose()
+        logger.info("AgentRunner resources closed.")
 
     def _setup_memory(self) -> None:
         """Prepare long-term memory components for lazy initialization."""

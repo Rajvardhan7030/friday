@@ -100,7 +100,9 @@ class Config:
         """Save the default configuration to a file."""
         try:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.config_path, "w") as f:
+            # Use os.open with 0o600 to ensure restricted permissions from creation
+            fd = os.open(self.config_path, os.O_CREAT | os.O_WRONLY, 0o600)
+            with open(fd, "w") as f:
                 yaml.dump(self._data, f, default_flow_style=False)
             logger.info(f"Created default configuration at {self.config_path}")
         except Exception as e:

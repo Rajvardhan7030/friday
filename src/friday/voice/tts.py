@@ -171,3 +171,7 @@ class TTSEngine:
                     file_path.unlink()
                 except:
                     pass
+
+    async def aclose(self) -> None:
+        """Close any open resources."""
+        pass

@@ -47,3 +47,7 @@ class LLMEngine(ABC):
     def model_name(self) -> str:
         """Return the name of the model being used."""
         pass
+
+    async def aclose(self) -> None:
+        """Close any open resources (connections, clients, etc.)."""
+        pass

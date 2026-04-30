@@ -27,9 +27,9 @@ class SandboxExecutor:
         """
         return validate_python_code(code)
 
-    def execute(self, code: str) -> Tuple[bool, str]:
+    async def execute(self, code: str) -> Tuple[bool, str]:
         """
         Runs code in the sandbox directory with resource limits.
         Delegates to centralized security utility.
         """
-        return run_sandboxed_code(code, self.sandbox_dir, self.config)
+        return await run_sandboxed_code(code, self.sandbox_dir, self.config)
