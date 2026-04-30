@@ -241,9 +241,15 @@ async def friday_init():
     # 1. Choose LLM Backend
     engine_choice = Prompt.ask(
         "\n[bold]Select LLM Backend[/bold]",
-        choices=["Local Ollama", "API Key (OpenAI-compatible)"],
-        default="Local Ollama"
+        choices=["1", "2", "Local Ollama", "API Key (OpenAI-compatible)"],
+        default="1"
     )
+
+    # Map numeric choices
+    if engine_choice == "1":
+        engine_choice = "Local Ollama"
+    elif engine_choice == "2":
+        engine_choice = "API Key (OpenAI-compatible)"
 
     if engine_choice == "API Key (OpenAI-compatible)":
         config.set("llm.engine", "openai", save=False)
