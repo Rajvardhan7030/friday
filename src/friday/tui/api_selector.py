@@ -3,6 +3,7 @@ from typing import Optional
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Select, Input, Button, Label
 from textual.containers import Container, Horizontal
+from friday.core.config import Config
 
 class APISelectorApp(App[Optional[dict[str, str]]]):
     """TUI for selecting and configuring an API provider for FRIDAY."""
@@ -53,17 +54,6 @@ class APISelectorApp(App[Optional[dict[str, str]]]):
         ("Other (OpenAI-compatible)", "other"),
     ]
 
-    # Provider defaults: (Model Name, Base URL)
-    DEFAULTS: dict[str, tuple[str, str]] = {
-        "ollama": ("llama3", "http://localhost:11434/v1"),
-        "openai": ("gpt-4o", "https://api.openai.com/v1"),
-        "gemini": ("gemini-1.5-flash", "https://generativelanguage.googleapis.com/v1beta/openai"),
-        "mistral": ("mistral-large-latest", "https://api.mistral.ai/v1"),
-        "groq": ("llama3-70b-8192", "https://api.groq.com/openai/v1"),
-        "openrouter": ("anthropic/claude-3.5-sonnet", "https://openrouter.ai/api/v1"),
-        "other": ("gpt-4o", "https://api.openai.com/v1"),
-    }
-
     def compose(self) -> ComposeResult:
         yield Header()
         with Container():
@@ -95,7 +85,9 @@ class APISelectorApp(App[Optional[dict[str, str]]]):
 
     def update_fields(self, provider: str) -> None:
         """Update input fields based on the selected provider."""
-        model_name, base_url = self.DEFAULTS.get(provider, ("", ""))
+        defaults = Config.PROVIDER_DEFAULTS.get(provider, {})
+        model_name = defaults.get("model", "")
+        base_url = defaults.get("url", "")
         
         model_input = self.query_one("#model_name", Input)
         url_input = self.query_one("#base_url", Input)
@@ -112,13 +104,15 @@ class APISelectorApp(App[Optional[dict[str, str]]]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button press events."""
         if event.button.id == "save":
-            provider = self.query_one("#provider", Select).value
+            provider = str(self.query_one("#provider", Select).value)
+            defaults = Config.PROVIDER_DEFAULTS.get(provider, {})
             results = {
-                "engine": "ollama" if provider == "ollama" else "openai",
+                "engine": defaults.get("engine", "openai"),
                 "api_key": self.query_one("#api_key", Input).value,
                 "model_name": self.query_one("#model_name", Input).value,
                 "base_url": self.query_one("#base_url", Input).value,
-                "provider": str(provider)
+                "embedding_model": defaults.get("embedding", "text-embedding-3-small"),
+                "provider": provider
             }
             self.exit(results)
         elif event.button.id == "cancel":

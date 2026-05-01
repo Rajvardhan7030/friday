@@ -17,6 +17,52 @@ class Config:
     DEFAULT_BASE_DIR = Path.home() / ".friday"
     DEFAULT_CONFIG_PATH = DEFAULT_BASE_DIR / "config.yaml"
 
+    # Provider defaults: (Engine, Model Name, Base URL, Embedding Model)
+    PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
+        "ollama": {
+            "engine": "ollama",
+            "model": "llama3",
+            "url": "http://localhost:11434",
+            "embedding": "nomic-embed-text:latest"
+        },
+        "openai": {
+            "engine": "openai",
+            "model": "gpt-4o",
+            "url": "https://api.openai.com/v1",
+            "embedding": "text-embedding-3-small"
+        },
+        "gemini": {
+            "engine": "openai",
+            "model": "gemini-1.5-flash",
+            "url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "embedding": "gemini-embedding-001"
+        },
+        "mistral": {
+            "engine": "openai",
+            "model": "mistral-large-latest",
+            "url": "https://api.mistral.ai/v1",
+            "embedding": "mistral-embed"
+        },
+        "groq": {
+            "engine": "openai",
+            "model": "llama3-70b-8192",
+            "url": "https://api.groq.com/openai/v1",
+            "embedding": "text-embedding-3-small"
+        },
+        "openrouter": {
+            "engine": "openai",
+            "model": "anthropic/claude-3.5-sonnet",
+            "url": "https://openrouter.ai/api/v1",
+            "embedding": "text-embedding-3-small"
+        },
+        "other": {
+            "engine": "openai",
+            "model": "gpt-4o",
+            "url": "https://api.openai.com/v1",
+            "embedding": "text-embedding-3-small"
+        },
+    }
+
     def __init__(self, config_path: Optional[Union[str, Path]] = None):
         """Initialize configuration from a file or use defaults."""
         self.base_dir = self.DEFAULT_BASE_DIR

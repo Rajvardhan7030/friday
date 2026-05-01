@@ -276,9 +276,15 @@ async def friday_init():
 
     # Apply results to config
     config.set("llm.engine", results["engine"], save=False)
+    config.set("llm.provider", results.get("provider", "other"), save=False)
     config.set("llm.api_key", results.get("api_key", ""), save=False)
     config.set("llm.primary_model", results["model_name"], save=False)
-    config.set("llm.api_base_url", results["base_url"], save=False)
+    config.set("llm.embedding_model", results.get("embedding_model", DEFAULT_EMBED_MODEL), save=False)
+    
+    if results["engine"] == "ollama":
+        config.set("llm.base_url", results["base_url"], save=False)
+    else:
+        config.set("llm.api_base_url", results["base_url"], save=False)
 
     if results["engine"] == "ollama":
         # 2. Hardware Detection using Model Scout
@@ -352,6 +358,9 @@ async def friday_init():
             
         if Confirm.ask(f"\nWould you like to pull the primary LLM ([cyan]{config.get('llm.primary_model')}[/cyan]) now?"):
             await ollama_pull(config.get("llm.primary_model"))
+            
+        if Confirm.ask(f"\nWould you like to pull the embedding model ([cyan]{config.get('llm.embedding_model')}[/cyan]) now?"):
+            await ollama_pull(config.get("llm.embedding_model"))
     else:
         if Confirm.ask("\nWould you like to download the required voice models now?"):
             await voice_download()
@@ -367,6 +376,7 @@ async def friday_status():
     table = Table(title="FRIDAY System Status", show_header=False, box=None)
     table.add_row("[bold]Engine[/bold]")
     table.add_row(f"  Type:      [cyan]{config.get('llm.engine')}[/cyan]")
+    table.add_row(f"  Provider:  [cyan]{config.get('llm.provider', 'N/A')}[/cyan]")
     
     table.add_row("\n[bold]Models[/bold]")
     table.add_row(f"  Primary:   [green]{config.get('llm.primary_model')}[/green]")

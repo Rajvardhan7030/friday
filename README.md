@@ -37,14 +37,14 @@ pip install -e .
 ```
 
 ### 3. First-Time Setup
-Run the automatic setup assistant. It uses our advanced **Model Scout** technology to check your hardware and recommend the best local LLMs for your specific machine:
+Run the interactive setup assistant. It features a modern **TUI (Terminal User Interface)** to help you configure your AI backend and use our **Model Scout** technology to recommend the best models for your specific machine:
 ```bash
 friday init
 ```
-- Select your **LLM Backend** (Use `1` for the default Local Ollama).
-- Review the hardware-tailored model recommendations.
-- Choose a **Male or Female** voice.
-- Let it download and pull everything automatically.
+- **Backend Choice**: Select **Local Ollama** for 100% privacy, or high-speed **Cloud APIs** (Gemini, OpenAI, Mistral, Groq, OpenRouter).
+- **Auto-Config**: The TUI pre-fills the best models and URLs for your selected provider.
+- **Hardware Scan**: Review tailored recommendations based on your CPU, RAM, and GPU (NVIDIA or Apple Silicon).
+- **Voice Selection**: Choose a **Male or Female** voice and let FRIDAY pull everything for you.
 
 ---
 
@@ -70,17 +70,17 @@ friday model-scout
 - **Sort & Filter**: Find models by tag (coding, reasoning) or suitability.
 - **Performance Estimates**: See estimated tokens/second for your CPU/GPU.
 - **One-Click Setup**: Press `D` to see the pull command for any compatible model.
-- **JSON Output**: For scripting, run `friday model-scout --json`.
 
 ### 📋 Common Commands & Tasks
-| What to Ask | What FRIDAY Does |
+| Command | What it does |
 | :--- | :--- |
-| **"Who are you?"** | Introduces herself and her purpose. |
-| **"Create a file named notes.txt"** | Writes a new file to your computer safely. |
-| **"Morning digest"** | Gives you a summary of news or your schedule. |
-| **"Clear history"** | Makes her forget the current conversation. |
-| **"Write a Python script to..."** | Writes code for you and runs it in her "Safe Zone." |
-| **"model-scout"** | Opens the hardware compatibility assessment tool. |
+| `friday` | Enters full interactive chat mode. |
+| `friday init` | Launches the interactive TUI setup assistant. |
+| `friday status` | Shows current LLM provider, models, and memory status. |
+| `friday doctor` | Runs a system health check (Hardware, STT, TTS, APIs). |
+| `friday model-scout` | Opens the hardware compatibility assessment tool. |
+| `friday ask "..."` | One-shot question mode (add `-v` for voice). |
+| `friday config` | View or modify configuration settings via CLI. |
 
 ---
 
@@ -88,37 +88,29 @@ friday model-scout
 
 If something isn't working right, don't worry! Here are the most common fixes:
 
-### ❓ FRIDAY is not responding or says "Connection Error"
-- **The Fix**: Make sure **Ollama** is running. Check your taskbar (Windows) or Menu Bar (Mac) for the Ollama icon. If it's closed, open it and try again.
+### ❓ Connection Error or "Brain Foggy"
+- **Ollama Users**: Make sure **Ollama** is running in your taskbar.
+- **API Users**: Run `friday status` to check your provider. Ensure your API Key is correct in `config.yaml`.
+- **Gemini Users**: FRIDAY automatically sanitizes your parameters and strips model prefixes to avoid "400 Bad Request" errors.
 
-### ❓ "I can't hear anything"
-- **The Fix 1**: Run `friday voice download` to make sure the voice files are installed.
-- **The Fix 2**: Check your computer's volume and ensure your speakers are turned on.
+### ❓ "I can't hear anything" / "She can't hear me"
+- Run `friday voice download` to ensure voice models are present.
+- Run `friday doctor` to verify your microphone is detected and energy levels are correct.
 
-### ❓ "She can't hear me" (Microphone issues)
-- **The Fix 1**: Make sure your microphone is plugged in and set as the "Default" in your computer's sound settings.
-- **The Fix 2**: Run `friday doctor` to see if FRIDAY can find your microphone.
-
-### ❓ Linux Users: Sound errors
-- **The Fix**: If you see errors about "PyAudio" or "PortAudio," run this command:
+### ❓ Sound errors on Linux
+- **The Fix**: If you see errors about "PyAudio" or "PortAudio," run:
   ```bash
   sudo apt-get install portaudio19-dev
   ```
 
-### ❓ Still having trouble?
-Run the "Doctor" command for a full system health check:
-```bash
-friday doctor
-```
-
 ---
 
-## 🏗️ Technical Highlights (For the Curious)
+## 🏗️ Technical Highlights
 
-- **🛡️ Hardened Sandboxing**: All code execution is isolated in restricted subprocesses or Docker containers.
-- **🚀 Optimized Memory**: Uses high-performance batch embedding to index your local documents up to 10x faster.
-- **🔄 Resilient Routing**: Automatically switches to secondary models if your primary choice is unavailable.
-- **🔒 Thread-Safe**: Background tasks are synchronized to maintain perfect conversation context.
+- **🌍 Multi-Provider LLM**: Native support for **Ollama, OpenAI, Google Gemini, Mistral, Groq, and OpenRouter**.
+- **🛡️ Robust API Sanitization**: Specialized engines automatically strip prefixes (like `models/`) and sanitize unsupported parameters (like `presence_penalty` or `strict` schemas) before they hit provider endpoints.
+- **📱 Apple Silicon Optimized**: Full VRAM detection and Tok/s heuristics for Mac M1/M2/M3 chips.
+- **🚀 Vector Memory**: High-performance local document indexing using batch embeddings.
 
 ---
 

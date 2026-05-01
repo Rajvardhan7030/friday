@@ -137,6 +137,14 @@ class APIEngine(LLMEngine):
 
     async def embed_batch(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings in batch using OpenAI-compatible API."""
+        if not isinstance(texts, list):
+            texts = [texts]
+        
+        # Filter empty strings and ensure strings
+        texts = [str(t) for t in texts if t and str(t).strip()]
+        if not texts:
+            return []
+
         url = "embeddings"
         
         # Determine which embedding model to use
@@ -191,12 +199,19 @@ class GeminiEngine(APIEngine):
             if parsed.path in ("", "/"):
                 base_url = base_url.rstrip("/") + "/v1beta/openai"
         
+        # Strip models/ prefix which causes 400
+        if model_name.startswith("models/"):
+            model_name = model_name[7:]
+        
         # Normalize model names
         if ":" in model_name or model_name in ("gemini", "gemini3", "default"):
             model_name = "gemini-1.5-flash"
             
-        if embedding_model_name and (":" in embedding_model_name or "nomic" in embedding_model_name):
-            embedding_model_name = "text-embedding-004"
+        if embedding_model_name:
+            if embedding_model_name.startswith("models/"):
+                embedding_model_name = embedding_model_name[7:]
+            if ":" in embedding_model_name or "nomic" in embedding_model_name:
+                embedding_model_name = "gemini-embedding-001"
 
         super().__init__(model_name, api_key, base_url, embedding_model_name)
 
@@ -205,10 +220,35 @@ class GeminiEngine(APIEngine):
         # We use the header only to avoid exposure in logs/proxies via query params
         return {"x-goog-api-key": self._api_key}, {}
 
+    async def _request(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Override to sanitize unsupported OpenAI parameters for Gemini."""
+        # Parameters rejected by Gemini's OpenAI compatibility endpoint
+        unsupported = [
+            "presence_penalty", "frequency_penalty", "logprobs", 
+            "seed", "user", "store", "metadata", 
+            "service_tier", "modalities", "audio"
+        ]
+        for key in unsupported:
+            payload.pop(key, None)
+            
+        # Strip models/ prefix from model field if it crept back in
+        if "model" in payload and isinstance(payload["model"], str) and payload["model"].startswith("models/"):
+            payload["model"] = payload["model"][7:]
+            
+        # Gemini does not support 'strict: true' in json_schema (response_format)
+        if "response_format" in payload and isinstance(payload["response_format"], dict):
+            rf = payload["response_format"]
+            if rf.get("type") == "json_schema" and "json_schema" in rf:
+                if rf["json_schema"].get("strict") is True:
+                    # We must set it to False or remove it
+                    payload["response_format"]["json_schema"]["strict"] = False
+
+        return await super()._request(url, payload)
+
     def _get_embedding_model(self) -> str:
         if self._embedding_model_name:
             return self._embedding_model_name
-        return "text-embedding-004"
+        return "gemini-embedding-001"
 
 class MistralEngine(APIEngine):
     """Specialized engine for Mistral AI API."""
