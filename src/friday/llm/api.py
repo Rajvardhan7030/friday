@@ -126,7 +126,7 @@ class APIEngine(LLMEngine):
         except httpx.HTTPStatusError as e:
             if e.response.status_code in (401, 403):
                 raise LLMError(f"Authentication failed (401/403). Please check your API key in config.yaml.") from e
-            raise LLMError(f"API LLM engine failed: {e}")
+            raise LLMError(f"API LLM engine failed: {self._format_http_error(e)}")
         except Exception as e:
             raise LLMError(f"API LLM engine failed: {e}")
 
@@ -157,13 +157,11 @@ class APIEngine(LLMEngine):
 
         try:
             data = await self._request(url, payload)
-            # Sort by index to ensure order matches input
-            sorted_data = sorted(data["data"], key=lambda x: x["index"])
-            return [item["embedding"] for item in sorted_data]
+            return self._extract_embeddings(data)
         except httpx.HTTPStatusError as e:
             if e.response.status_code in (401, 403):
                 raise LLMError(f"Authentication failed (401/403). Please check your API key in config.yaml.") from e
-            raise LLMError(f"Failed to generate API embeddings: {e}")
+            raise LLMError(f"Failed to generate API embeddings: {self._format_http_error(e)}")
         except Exception as e:
             raise LLMError(f"Failed to generate API embeddings: {e}")
 
@@ -172,6 +170,20 @@ class APIEngine(LLMEngine):
         if self._embedding_model_name:
             return self._embedding_model_name
         return "text-embedding-3-small" if "gpt" in self._model_name else self._model_name
+
+    def _extract_embeddings(self, data: Dict[str, Any]) -> List[List[float]]:
+        """Extract embeddings while tolerating providers that omit OpenAI's index field."""
+        items = data["data"]
+        if all("index" in item for item in items):
+            items = sorted(items, key=lambda item: item["index"])
+        return [item["embedding"] for item in items]
+
+    def _format_http_error(self, error: "httpx.HTTPStatusError") -> str:
+        """Include provider error body; 400s are otherwise impossible to diagnose."""
+        body = error.response.text.strip()
+        if len(body) > 1000:
+            body = body[:1000] + "..."
+        return f"{error}; response body: {body}" if body else str(error)
 
     def is_available(self) -> bool:
         """Check if the API is reachable (basic check)."""
@@ -204,8 +216,8 @@ class GeminiEngine(APIEngine):
             model_name = model_name[7:]
         
         # Normalize model names
-        if ":" in model_name or model_name in ("gemini", "gemini3", "default"):
-            model_name = "gemini-1.5-flash"
+        if ":" in model_name or model_name in ("gemini", "gemini3", "default", "gemini-1.5-flash"):
+            model_name = "gemini-2.5-flash"
             
         if embedding_model_name:
             if embedding_model_name.startswith("models/"):
@@ -216,9 +228,48 @@ class GeminiEngine(APIEngine):
         super().__init__(model_name, api_key, base_url, embedding_model_name)
 
     def _get_auth_config(self) -> Tuple[Dict[str, str], Dict[str, str]]:
-        # Google AI Studio prefers API key in query param or x-goog-api-key header
-        # We use the header only to avoid exposure in logs/proxies via query params
-        return {"x-goog-api-key": self._api_key}, {}
+        return {"Authorization": f"Bearer {self._api_key}"}, {}
+
+    async def embed(self, text: str) -> List[float]:
+        """Generate a single Gemini embedding using the documented OpenAI payload."""
+        results = await self._embed_payload(str(text))
+        return results[0]
+
+    async def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """Generate Gemini embeddings.
+
+        Gemini's OpenAI-compatible examples document a string input for embeddings,
+        so keep the common query path on that shape and fall back to per-item calls
+        for batches.
+        """
+        if not isinstance(texts, list):
+            texts = [texts]
+        texts = [str(t) for t in texts if t and str(t).strip()]
+        if not texts:
+            return []
+        if len(texts) == 1:
+            return await self._embed_payload(texts[0])
+
+        embeddings: List[List[float]] = []
+        for text in texts:
+            embeddings.extend(await self._embed_payload(text))
+        return embeddings
+
+    async def _embed_payload(self, text: str) -> List[List[float]]:
+        payload = {
+            "model": self._get_embedding_model(),
+            "input": text,
+        }
+
+        try:
+            data = await self._request("embeddings", payload)
+            return self._extract_embeddings(data)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (401, 403):
+                raise LLMError("Authentication failed (401/403). Please check your API key in config.yaml.") from e
+            raise LLMError(f"Failed to generate API embeddings: {self._format_http_error(e)}")
+        except Exception as e:
+            raise LLMError(f"Failed to generate API embeddings: {e}")
 
     async def _request(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Override to sanitize unsupported OpenAI parameters for Gemini."""

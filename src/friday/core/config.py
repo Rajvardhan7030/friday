@@ -33,7 +33,7 @@ class Config:
         },
         "gemini": {
             "engine": "openai",
-            "model": "gemini-1.5-flash",
+            "model": "gemini-2.5-flash",
             "url": "https://generativelanguage.googleapis.com/v1beta/openai",
             "embedding": "gemini-embedding-001"
         },
