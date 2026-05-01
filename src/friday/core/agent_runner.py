@@ -307,7 +307,10 @@ class AgentRunner:
         import json
         
         logger.info("No command match. Falling back to LLM.")
-        if self.llm is None:
+        if self.llm is None or not self.llm.is_available():
+            engine_type = self.config.get("llm.engine", "ollama")
+            if engine_type == "openai":
+                return "The API engine is unavailable. Please check your API key in config.yaml."
             return "The local LLM engine is unavailable. Install the required dependencies and start Ollama to enable free-form chat."
         
         # Build chat history for LLM

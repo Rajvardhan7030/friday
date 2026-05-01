@@ -14,6 +14,7 @@ try:
     from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception, before_sleep_log
 except ImportError:
     # Fallback if tenacity is not available
+    logging.getLogger(__name__).warning("The 'tenacity' package is not installed. Retries will be disabled for API calls.")
     def retry(*args, **kwargs):
         def decorator(f):
             return f
@@ -48,6 +49,8 @@ class APIEngine(LLMEngine):
         self._model_name = model_name
         self._embedding_model_name = embedding_model_name
         self._api_key = api_key
+        if not self._api_key:
+            logger.warning("No API key provided for APIEngine. Remote calls will fail.")
         self._base_url = base_url.rstrip("/") + "/"
         
         headers, params = self._get_auth_config()
@@ -94,8 +97,7 @@ class APIEngine(LLMEngine):
     ) -> LLMResponse:
         """Send chat completion to OpenAI-compatible API."""
         if stream:
-            # Streaming not yet implemented in this basic version
-            logger.warning("Streaming requested but not implemented for APIEngine.")
+            raise NotImplementedError("Streaming is not yet implemented for APIEngine.")
 
         url = "chat/completions"
         payload = {
@@ -121,8 +123,11 @@ class APIEngine(LLMEngine):
                 usage=usage,
                 tool_calls=tool_calls
             )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (401, 403):
+                raise LLMError(f"Authentication failed (401/403). Please check your API key in config.yaml.") from e
+            raise LLMError(f"API LLM engine failed: {e}")
         except Exception as e:
-            logger.error(f"API chat error: {e}")
             raise LLMError(f"API LLM engine failed: {e}")
 
     async def embed(self, text: str) -> List[float]:
@@ -147,8 +152,11 @@ class APIEngine(LLMEngine):
             # Sort by index to ensure order matches input
             sorted_data = sorted(data["data"], key=lambda x: x["index"])
             return [item["embedding"] for item in sorted_data]
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (401, 403):
+                raise LLMError(f"Authentication failed (401/403). Please check your API key in config.yaml.") from e
+            raise LLMError(f"Failed to generate API embeddings: {e}")
         except Exception as e:
-            logger.error(f"API embedding error: {e}")
             raise LLMError(f"Failed to generate API embeddings: {e}")
 
     def _get_embedding_model(self) -> str:
@@ -177,7 +185,11 @@ class GeminiEngine(APIEngine):
     ):
         # Auto-correct Gemini base URL if it's missing the OpenAI compatibility path
         if "generativelanguage.googleapis.com" in base_url and "/openai" not in base_url:
-            base_url = base_url.rstrip("/") + "/v1beta/openai"
+            from urllib.parse import urlparse
+            parsed = urlparse(base_url)
+            # Only append if the path is empty or just a slash (i.e., user only provided the domain)
+            if parsed.path in ("", "/"):
+                base_url = base_url.rstrip("/") + "/v1beta/openai"
         
         # Normalize model names
         if ":" in model_name or model_name in ("gemini", "gemini3", "default"):
@@ -190,12 +202,67 @@ class GeminiEngine(APIEngine):
 
     def _get_auth_config(self) -> Tuple[Dict[str, str], Dict[str, str]]:
         # Google AI Studio prefers API key in query param or x-goog-api-key header
-        return {"x-goog-api-key": self._api_key}, {"key": self._api_key}
+        # We use the header only to avoid exposure in logs/proxies via query params
+        return {"x-goog-api-key": self._api_key}, {}
 
     def _get_embedding_model(self) -> str:
         if self._embedding_model_name:
             return self._embedding_model_name
         return "text-embedding-004"
+
+class MistralEngine(APIEngine):
+    """Specialized engine for Mistral AI API."""
+
+    def __init__(
+        self, 
+        model_name: str, 
+        api_key: str, 
+        base_url: str = "https://api.mistral.ai/v1",
+        embedding_model_name: Optional[str] = None
+    ):
+        super().__init__(model_name, api_key, base_url, embedding_model_name)
+
+    def _get_embedding_model(self) -> str:
+        if self._embedding_model_name:
+            return self._embedding_model_name
+        return "mistral-embed"
+
+class GroqEngine(APIEngine):
+    """Specialized engine for Groq API."""
+
+    def __init__(
+        self, 
+        model_name: str, 
+        api_key: str, 
+        base_url: str = "https://api.groq.com/openai/v1",
+        embedding_model_name: Optional[str] = None
+    ):
+        super().__init__(model_name, api_key, base_url, embedding_model_name)
+
+    def _get_embedding_model(self) -> str:
+        # Groq doesn't host embeddings yet, fallback to a sensible default or raise
+        if self._embedding_model_name:
+            return self._embedding_model_name
+        return "text-embedding-3-small" # Heuristic fallback
+
+class OpenRouterEngine(APIEngine):
+    """Specialized engine for OpenRouter API."""
+
+    def __init__(
+        self, 
+        model_name: str, 
+        api_key: str, 
+        base_url: str = "https://openrouter.ai/api/v1",
+        embedding_model_name: Optional[str] = None
+    ):
+        super().__init__(model_name, api_key, base_url, embedding_model_name)
+    
+    def _get_auth_config(self) -> Tuple[Dict[str, str], Dict[str, str]]:
+        headers, params = super()._get_auth_config()
+        # OpenRouter likes these for their rankings
+        headers["HTTP-Referer"] = "https://github.com/google-gemini/friday"
+        headers["X-Title"] = "FRIDAY AI"
+        return headers, params
 
 def create_api_engine(
     model_name: str, 
@@ -204,6 +271,14 @@ def create_api_engine(
     embedding_model_name: Optional[str] = None
 ) -> APIEngine:
     """Factory to create the appropriate API engine based on the base URL."""
-    if "generativelanguage.googleapis.com" in base_url:
+    url = base_url.lower()
+    if "generativelanguage.googleapis.com" in url:
         return GeminiEngine(model_name, api_key, base_url, embedding_model_name)
+    if "mistral.ai" in url:
+        return MistralEngine(model_name, api_key, base_url, embedding_model_name)
+    if "groq.com" in url:
+        return GroqEngine(model_name, api_key, base_url, embedding_model_name)
+    if "openrouter.ai" in url:
+        return OpenRouterEngine(model_name, api_key, base_url, embedding_model_name)
+    
     return APIEngine(model_name, api_key, base_url, embedding_model_name)

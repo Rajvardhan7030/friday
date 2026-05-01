@@ -25,6 +25,7 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 DEFAULT_EMBED_MODEL = "nomic-embed-text:latest"
+OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 class FridayCLI:
     """The CLI interface and main event loop for Friday."""
@@ -254,7 +255,6 @@ async def friday_config(args: List[str]):
 
 async def friday_init():
     """Interactive initialization and hardware auto-tuning."""
-    from .core.hardware import get_hardware_profile
     from rich.prompt import Confirm
     
     console.print(Panel(
@@ -266,32 +266,21 @@ async def friday_init():
     config = Config()
 
     # 1. Choose LLM Backend
-    engine_choice = Prompt.ask(
-        "\n[bold]Select LLM Backend[/bold]",
-        choices=["1", "2", "Local Ollama", "API Key (OpenAI-compatible)"],
-        default="1"
-    )
+    from .tui.api_selector import APISelectorApp
+    app = APISelectorApp()
+    results = await app.run_async()
+    
+    if not results:
+        console.print("[yellow]Initialization cancelled.[/yellow]")
+        return
 
-    # Map numeric choices
-    if engine_choice == "1":
-        engine_choice = "Local Ollama"
-    elif engine_choice == "2":
-        engine_choice = "API Key (OpenAI-compatible)"
+    # Apply results to config
+    config.set("llm.engine", results["engine"], save=False)
+    config.set("llm.api_key", results.get("api_key", ""), save=False)
+    config.set("llm.primary_model", results["model_name"], save=False)
+    config.set("llm.api_base_url", results["base_url"], save=False)
 
-    if engine_choice == "API Key (OpenAI-compatible)":
-        config.set("llm.engine", "openai", save=False)
-        api_key = Prompt.ask("Enter your API Key", password=True)
-        config.set("llm.api_key", api_key, save=False)
-        
-        model_name = Prompt.ask("Enter Model Name", default="gpt-4o")
-        config.set("llm.primary_model", model_name, save=False)
-        
-        api_url = Prompt.ask("Enter API Base URL (optional)", default="https://api.openai.com/v1")
-        config.set("llm.api_base_url", api_url, save=False)
-        
-        console.print("[green]API Backend configured.[/green]")
-    else:
-        config.set("llm.engine", "ollama", save=False)
+    if results["engine"] == "ollama":
         # 2. Hardware Detection using Model Scout
         with console.status("[bold green]Probing hardware...[/bold green]"):
             profile = scan_hardware()
@@ -335,6 +324,8 @@ async def friday_init():
             config.set("llm.primary_model", recs['primary'], save=False)
             config.set("llm.fallback_model", recs['fallback'], save=False)
             config.set("llm.embedding_model", recs['embedding'], save=False)
+    else:
+        console.print(f"[green]{results.get('provider', 'API').capitalize()} Backend configured.[/green]")
 
     # 4. Voice Selection
     voice_choice = Prompt.ask(
