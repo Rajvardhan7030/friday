@@ -16,8 +16,15 @@ from .utils.logging import setup_logging, ignore_stderr
 from .voice.tts import TTSEngine
 from .voice.stt import STTEngine
 
+# Model Scout Imports
+from friday_model_scout.hardware_scanner import scan_hardware
+from friday_model_scout.model_database import get_models
+from friday_model_scout.compatibility_engine import get_compatible_models
+
 console = Console()
 logger = logging.getLogger(__name__)
+
+DEFAULT_EMBED_MODEL = "nomic-embed-text:latest"
 
 class FridayCLI:
     """The CLI interface and main event loop for Friday."""
@@ -192,6 +199,26 @@ async def voice_download():
     except KeyboardInterrupt:
         console.print("\n[yellow]Download interrupted by user.[/yellow]")
 
+async def ollama_pull(model_name: str):
+    """Pull an Ollama model with progress feedback."""
+    try:
+        import ollama
+        client = ollama.AsyncClient()
+        
+        console.print(f"Pulling model [cyan]{model_name}[/cyan] from Ollama...")
+        try:
+            with console.status(f"[bold green]Downloading {model_name}...[/bold green]") as status:
+                async for part in await client.pull(model_name, stream=True):
+                    if 'status' in part:
+                        status.update(f"[[bold cyan]Ollama[/bold cyan]] {part['status']}...")
+            
+            console.print(f"[bold green]Successfully pulled {model_name}[/bold green]")
+        except Exception as e:
+            console.print(f"[bold red]Failed to pull {model_name}:[/bold red] {e}")
+            console.print(f"[dim]Try running 'ollama pull {model_name}' manually.[/dim]")
+    except ImportError:
+        console.print("[bold red]Ollama library not installed.[/bold red]")
+
 async def friday_config(args: List[str]):
     """Manage Friday configuration."""
     config = Config()
@@ -265,23 +292,44 @@ async def friday_init():
         console.print("[green]API Backend configured.[/green]")
     else:
         config.set("llm.engine", "ollama", save=False)
-        # 2. Hardware Detection (Ollama Only)
+        # 2. Hardware Detection using Model Scout
         with console.status("[bold green]Probing hardware...[/bold green]"):
-            profile = get_hardware_profile()
+            profile = scan_hardware()
         
-        console.print(f"• OS: [cyan]{profile.os}[/cyan]")
+        console.print(f"• OS: [cyan]{profile.os}[/cyan] | Arch: [cyan]{profile.cpu_arch}[/cyan]")
         console.print(f"• RAM: [cyan]{profile.ram_gb:.1f} GB[/cyan]")
         if profile.gpu_name:
             console.print(f"• GPU: [cyan]{profile.gpu_name}[/cyan] ([green]{profile.gpu_vram_gb:.1f} GB VRAM[/green])")
         else:
             console.print("• GPU: [yellow]None detected[/yellow] (Using CPU)")
 
-        # 3. Model Recommendations
-        recs = profile.recommend_models()
-        console.print("\n[bold]Recommended Models:[/bold]")
-        console.print(f"  - Primary (Chat): [green]{recs['primary']}[/green]")
-        console.print(f"  - Fallback:       [green]{recs['fallback']}[/green]")
-        console.print(f"  - Embedding:      [green]{recs['embedding']}[/green]")
+        # 3. Model Recommendations using Model Scout
+        models = get_models()
+        scout_results = get_compatible_models(models, profile)
+        
+        # Sort by score descending
+        scout_results.sort(key=lambda x: x["compat"]["score"], reverse=True)
+        
+        # Filter for Ollama models
+        ollama_results = [m for m in scout_results if m.get("ollama_name")]
+        
+        if not ollama_results:
+            recs = {"primary": "gemma2:2b", "fallback": "gemma2:2b", "embedding": DEFAULT_EMBED_MODEL}
+        else:
+            best = ollama_results[0]
+            # Fallback is a smaller model
+            fallback = next((m for m in ollama_results if "small" in m["tags"]), best)
+            
+            recs = {
+                "primary": best["ollama_name"],
+                "fallback": fallback["ollama_name"],
+                "embedding": DEFAULT_EMBED_MODEL
+            }
+            
+            console.print(f"\n[bold]Model Scout Recommendation (Fit: {best['compat']['fit']}):[/bold]")
+            console.print(f"  - Primary (Chat): [green]{recs['primary']}[/green] (Score: {best['compat']['score']})")
+            console.print(f"  - Fallback:       [green]{recs['fallback']}[/green]")
+            console.print(f"  - Embedding:      [green]{recs['embedding']}[/green]")
 
         if Confirm.ask("\nApply these model recommendations?"):
             config.set("llm.primary_model", recs['primary'], save=False)
@@ -311,10 +359,8 @@ async def friday_init():
         if Confirm.ask("\nWould you like to download the required voice models now?"):
             await voice_download()
             
-            # Add Ollama pull instructions
-            console.print("\n[bold blue]Next Steps:[/bold blue]")
-            console.print(f"Run the following to ensure LLMs are ready:")
-            console.print(f"  [cyan]ollama pull {config.get('llm.primary_model')}[/cyan]")
+        if Confirm.ask(f"\nWould you like to pull the primary LLM ([cyan]{config.get('llm.primary_model')}[/cyan]) now?"):
+            await ollama_pull(config.get("llm.primary_model"))
     else:
         if Confirm.ask("\nWould you like to download the required voice models now?"):
             await voice_download()
@@ -398,6 +444,28 @@ async def friday_doctor():
     except Exception as e:
         console.print(f"• Audio Input: [red]ERROR[/red] ({e})")
 
+async def friday_model_scout(args: List[str]):
+    """Run the model-scout tool."""
+    from friday_model_scout.cli import run_scout
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="friday model-scout", description="Friday Model Scout")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--filter", type=str)
+    parser.add_argument("--sort", type=str, default="score")
+    parser.add_argument("--ollama-only", action="store_true")
+
+    # Filter out 'model-scout' from args if present (it shouldn't be here but just in case)
+    clean_args = [a for a in args if a != "model-scout"]
+    parsed_args = parser.parse_args(clean_args)
+    
+    await run_scout(
+        json_output=parsed_args.json,
+        filter_tag=parsed_args.filter,
+        sort_by=parsed_args.sort,
+        ollama_only=parsed_args.ollama_only
+    )
+
 async def main(voice_output_enabled: bool = False):
     """Main interactive loop."""
     cli = FridayCLI(voice_output_enabled=voice_output_enabled)
@@ -458,6 +526,14 @@ def app():
             return
         except Exception as e:
             print(f"Doctor failed: {e}")
+            sys.exit(1)
+
+    if normalized_args[:1] == ["model-scout"]:
+        try:
+            asyncio.run(friday_model_scout(raw_args[1:]))
+            return
+        except Exception as e:
+            print(f"Model-scout failed: {e}")
             sys.exit(1)
     
     if normalized_args[:1] == ["ask"]:

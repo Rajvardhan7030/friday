@@ -51,6 +51,12 @@ src/friday/utils/security.py
 src/friday/voice/__init__.py
 src/friday/voice/stt.py
 src/friday/voice/tts.py
+src/friday_model_scout/__init__.py
+src/friday_model_scout/cli.py
+src/friday_model_scout/compatibility_engine.py
+src/friday_model_scout/hardware_scanner.py
+src/friday_model_scout/model_database.py
+src/friday_model_scout/tui.py
 tests/test_agents.py
 tests/test_cli.py
 tests/test_security.py

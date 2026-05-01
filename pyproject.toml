@@ -29,6 +29,7 @@ dependencies = [
     "pyaudio>=0.2.14",
     "vosk>=0.3.45",
     "docker>=7.0.0",
+    "textual>=0.40.0",
 ]
 
 [project.optional-dependencies]

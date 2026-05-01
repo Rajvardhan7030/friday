@@ -23,34 +23,6 @@ class HardwareProfile:
     gpu_vram_gb: Optional[float]
     gpu_name: Optional[str]
 
-    def recommend_models(self) -> Dict[str, str]:
-        recommendations = {
-            "primary": "gemma3:4b",
-            "fallback": "gemma2:2b",
-            "embedding": "nomic-embed-text:latest"
-        }
-
-        if self.gpu_vram_gb:
-            if self.gpu_vram_gb >= 8:
-                recommendations["primary"] = "gemma3:4b"
-                recommendations["fallback"] = "gemma2:2b"
-            elif self.gpu_vram_gb >= 4:
-                recommendations["primary"] = "gemma3:4b"
-                recommendations["fallback"] = "gemma2:2b"
-            else:
-                recommendations["primary"] = "gemma2:2b"
-                recommendations["fallback"] = "gemma2:2b"
-        else:
-            # CPU-only
-            if self.ram_gb >= 8:
-                recommendations["primary"] = "gemma3:4b"
-                recommendations["fallback"] = "gemma2:2b"
-            else:
-                recommendations["primary"] = "gemma2:2b"
-                recommendations["fallback"] = "gemma2:2b"
-
-        return recommendations
-
 def get_hardware_profile() -> HardwareProfile:
     """Detect and return hardware profile."""
     ram_gb = psutil.virtual_memory().total / (1024 ** 3)

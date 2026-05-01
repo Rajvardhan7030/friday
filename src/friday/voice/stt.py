@@ -101,8 +101,15 @@ class STTEngine:
             audio_np = np.frombuffer(audio_data, dtype=np.int16)
             energy = np.sqrt(np.mean(audio_np**2))
         else:
-            import audioop
-            energy = audioop.rms(audio_data, 2)
+            # Fallback for deprecated audioop.rms
+            import struct
+            import math
+            count = len(audio_data) // 2
+            if count == 0:
+                return False
+            shorts = struct.unpack(f"{count}h", audio_data)
+            sum_squares = sum(s*s for s in shorts)
+            energy = math.sqrt(sum_squares / count)
         return energy > self.energy_threshold
 
     async def listen(
