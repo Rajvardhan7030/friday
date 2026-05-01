@@ -37,13 +37,14 @@ pip install -e .
 ```
 
 ### 3. First-Time Setup
-Run the automatic setup assistant. It will check your hardware and help you download everything you need:
+Run the automatic setup assistant. It uses our advanced **Model Scout** technology to check your hardware and recommend the best local LLMs for your specific machine:
 ```bash
 friday init
 ```
 - Select your **LLM Backend** (Use `1` for the default Local Ollama).
+- Review the hardware-tailored model recommendations.
 - Choose a **Male or Female** voice.
-- Let it download the voice files for you.
+- Let it download and pull everything automatically.
 
 ---
 
@@ -61,6 +62,16 @@ friday ask "How do I make a perfect omelette?"
 ```
 *Add `-v` to the end (e.g., `friday ask "Hello" -v`) to hear her speak the answer!*
 
+### 🔍 Model Scout (Hardware Assessment)
+Want to know which local models your computer can handle? Use the interactive Scout TUI:
+```bash
+friday model-scout
+```
+- **Sort & Filter**: Find models by tag (coding, reasoning) or suitability.
+- **Performance Estimates**: See estimated tokens/second for your CPU/GPU.
+- **One-Click Setup**: Press `D` to see the pull command for any compatible model.
+- **JSON Output**: For scripting, run `friday model-scout --json`.
+
 ### 📋 Common Commands & Tasks
 | What to Ask | What FRIDAY Does |
 | :--- | :--- |
@@ -69,6 +80,7 @@ friday ask "How do I make a perfect omelette?"
 | **"Morning digest"** | Gives you a summary of news or your schedule. |
 | **"Clear history"** | Makes her forget the current conversation. |
 | **"Write a Python script to..."** | Writes code for you and runs it in her "Safe Zone." |
+| **"model-scout"** | Opens the hardware compatibility assessment tool. |
 
 ---
 
