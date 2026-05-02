@@ -4,6 +4,7 @@ import logging
 import pkgutil
 import asyncio
 import json
+import uuid
 from importlib import import_module
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -18,6 +19,9 @@ from ..llm.engine import Message
 from ..memory.document_indexer import DocumentIndexer
 from ..memory.vector_store import VectorStore
 from ..voice.tts import TTSEngine
+from ..agents.router import AgentRouter
+from ..agents.adaptive_rag import AdaptiveRAGAgent
+from ..agents.tools import LocalDocumentRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,7 @@ class Session:
         self.recent_messages = recent_messages
         self.summary_max_chars = summary_max_chars
         self.history_summary = ""
+        self.session_id = uuid.uuid4().hex[:8]
         self._summarize_lock = asyncio.Lock()
 
     def add_message(self, role: str, content: str, llm: Optional['LocalEngine'] = None):
@@ -87,9 +92,14 @@ class Session:
                 logger.warning(f"Semantic summarization failed, falling back to text: {e}")
                 self._append_to_summary(archived_messages)
 
-    def build_llm_messages(self, user_input: str) -> List[Message]:
+    def build_llm_messages(self) -> List[Message]:
         """Build the message list for free-form chat with summarized context."""
-        messages: List[Message] = []
+        messages: List[Message] = [
+            Message(
+                role="system",
+                content="You are FRIDAY, a helpful, privacy-first local AI assistant. Answer the user's request directly or use tools if needed."
+            )
+        ]
         if self.history_summary:
             messages.append(
                 Message(
@@ -103,7 +113,6 @@ class Session:
 
         recent_history = self.history[-self.recent_messages:] if self.recent_messages > 0 else []
         messages.extend(Message(role=entry["role"], content=entry["content"]) for entry in recent_history)
-        messages.append(Message(role="user", content=user_input))
         return messages
 
     def _append_to_summary(self, archived_messages: List[Dict[str, str]]) -> None:
@@ -130,6 +139,7 @@ class AgentRunner:
         self.document_indexer: Optional[DocumentIndexer] = None
         self._memory_ready = False
         self._memory_disabled_reason: Optional[str] = None
+        self._memory_lock = asyncio.Lock()
 
         try:
             engine_type = config.get("llm.engine", "ollama")
@@ -158,6 +168,34 @@ class AgentRunner:
         
         self._load_agents()
         self._setup_memory()
+        self.router: Optional[AgentRouter] = None
+        self._setup_router()
+
+    def _setup_router(self):
+        """Initialize the agent router and register specialized agents."""
+        if self.llm is None:
+            return
+
+        self.router = AgentRouter(self.llm, self.config)
+
+        # 1. Register Adaptive RAG
+        if self.vector_store and self.document_indexer:
+            retriever = LocalDocumentRetriever(self.vector_store, self.document_indexer)
+            self.router.register_agent(AdaptiveRAGAgent(self.llm, retriever))
+
+        # 2. Register Research Agent from plugins
+        try:
+            from ..plugins.research.main import ResearchAgent
+            if self.vector_store:
+                self.router.register_agent(ResearchAgent(self.llm, self.vector_store))
+        except (ImportError, ModuleNotFoundError):
+            logger.debug("ResearchAgent plugin not loaded into router.")
+
+        # 3. Register Skeleton Agents
+        from ..agents.router import LangGraphAgent, AutoGenAgent, CrewAIAgent
+        self.router.register_agent(LangGraphAgent(self.llm))
+        self.router.register_agent(AutoGenAgent(self.llm))
+        self.router.register_agent(CrewAIAgent(self.llm))
 
     def _load_agents(self):
         """Discover and import agent modules to trigger registry decorators."""
@@ -211,15 +249,20 @@ class AgentRunner:
         if self._memory_ready or self.vector_store is None or self.document_indexer is None:
             return
 
-        try:
-            await self.vector_store.initialize()
-            await self._auto_index_memory_directories()
-            self._memory_ready = True
-        except Exception as e:
-            self._memory_disabled_reason = str(e)
-            self.vector_store = None
-            self.document_indexer = None
-            logger.warning("Long-term memory unavailable: %s", e)
+        async with self._memory_lock:
+            # Re-check inside the lock
+            if self._memory_ready:
+                return
+                
+            try:
+                await self.vector_store.initialize()
+                await self._auto_index_memory_directories()
+                self._memory_ready = True
+            except Exception as e:
+                self._memory_disabled_reason = str(e)
+                self.vector_store = None
+                self.document_indexer = None
+                logger.warning("Long-term memory unavailable: %s", e)
 
     async def _auto_index_memory_directories(self) -> None:
         """Index configured directories for retrieval-augmented responses."""
@@ -265,8 +308,12 @@ class AgentRunner:
             return
 
         document = f"User: {user_text}\nAssistant: {assistant_text}"
-        metadata = {"source": "conversation", "type": "chat_exchange"}
-        doc_id = f"chat_{len(self.session.history)}"
+        metadata = {
+            "source": "conversation",
+            "type": "chat_exchange",
+            "session_id": self.session.session_id
+        }
+        doc_id = f"chat_{self.session.session_id}_{len(self.session.history)}"
         await self.vector_store.add_documents([document], [metadata], [doc_id])
 
     async def handle_input(self, text: str) -> str:
@@ -274,6 +321,9 @@ class AgentRunner:
         text = text.strip()
         if not text:
             return "I'm listening, but I didn't hear anything."
+
+        # Standardized: Add user message to history immediately
+        self.session.add_message("user", text, llm=self.llm)
 
         # 1. Check the Command Registry (Deterministic Logic)
         handler_data = registry.find_handler(text)
@@ -290,7 +340,6 @@ class AgentRunner:
                     config=self.config,
                     tts=self.tts,
                 )
-                self.session.add_message("user", text, llm=self.llm)
                 self.session.add_message("assistant", str(result))
                 await self._remember_exchange(text, str(result))
                 return result
@@ -298,7 +347,23 @@ class AgentRunner:
                 logger.error(f"Command {cmd.name} failed: {e}", exc_info=True)
                 return f"I encountered an error running '{cmd.name}': {str(e)}"
 
-        # 2. Fallback to LLM if no command matches
+        # 2. Check for Specialized Agent Intent (AI Routing)
+        if self.router:
+            try:
+                # Ask the router to classify the intent
+                intent = await self.router._detect_intent(text, self.session.history)
+                if intent in self.router._agents:
+                    logger.info(f"Routing to specialized agent: {intent}")
+                    agent_result = await self.router.route(text, self.session.history)
+                    
+                    self.session.add_message("assistant", agent_result.content)
+                    await self._remember_exchange(text, agent_result.content)
+                    return agent_result.content
+            except Exception as e:
+                logger.error(f"Agent routing failed: {e}")
+                # Fall through to general chat on router failure
+
+        # 3. Fallback to LLM if no command matches
         return await self._fallback_to_llm(text)
 
     async def _fallback_to_llm(self, text: str) -> str:
@@ -314,13 +379,11 @@ class AgentRunner:
             return "The local LLM engine is unavailable. Install the required dependencies and start Ollama to enable free-form chat."
         
         # Build chat history for LLM
-        messages = self.session.build_llm_messages(text)
+        messages = self.session.build_llm_messages()
         memory_message = await self._build_memory_message(text)
         if memory_message is not None:
             insert_at = 1 if messages and messages[0].role == "system" else 0
             messages.insert(insert_at, memory_message)
-        
-        self.session.add_message("user", text, llm=self.llm)
         
         tools = mcp_client.get_tools_for_llm()
         if not tools:

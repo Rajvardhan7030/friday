@@ -165,7 +165,11 @@ class AdaptiveRAGAgent(BaseAgent):
         )
 
     async def _run_general_chat(self, ctx: Context) -> AgentResult:
-        res = await self.llm.chat([Message(role="user", content=ctx.user_query)])
+        messages = [
+            Message(role="system", content="You are FRIDAY, a helpful, privacy-first local AI assistant."),
+            Message(role="user", content=ctx.user_query)
+        ]
+        res = await self.llm.chat(messages)
         return AgentResult(content=res.content, metadata={"tts_content": res.content, "retrieval_used": False})
 
     def _parse_json(self, text: str) -> Dict[str, Any]:

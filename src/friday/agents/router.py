@@ -97,11 +97,9 @@ Respond ONLY with JSON: {{"agent": "category_name"}}
         messages = [
             Message(role="system", content="You are FRIDAY, a helpful, privacy-first local AI assistant.")
         ]
-        # Add history
+        # Add history (which now includes the current query)
         for msg in history[-5:]: # Last 5 turns for context
             messages.append(Message(role=msg["role"], content=msg["content"]))
-        
-        messages.append(Message(role="user", content=query))
         
         response = await self.llm.chat(messages)
         return AgentResult(content=response.content)

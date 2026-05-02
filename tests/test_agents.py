@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import types
+import asyncio
 
 from friday.agents.base import Context
 # from friday.agents.code_assistant import _resolve_workspace_dir, code_task_handler
@@ -181,7 +182,7 @@ def test_session_history_limit_is_configurable():
 
 
 def test_session_builds_llm_messages_with_summary_and_recent_window():
-    session = Session(max_history_messages=3, recent_messages=2, summary_max_chars=200)
+    session = Session(max_history_messages=3, recent_messages=3, summary_max_chars=200)
 
     for role, content in [
         ("user", "message 0"),
@@ -192,11 +193,15 @@ def test_session_builds_llm_messages_with_summary_and_recent_window():
     ]:
         session.add_message(role, content)
 
-    messages = session.build_llm_messages("latest question")
+    # In actual usage, the current user input is added to history BEFORE building messages
+    session.add_message("user", "latest question")
+    messages = session.build_llm_messages()
 
     assert messages[0].role == "system"
-    assert "message 0" in messages[0].content
-    assert [(message.role, message.content) for message in messages[1:]] == [
+    assert "You are FRIDAY" in messages[0].content
+    assert messages[1].role == "system"
+    assert "message 0" in messages[1].content
+    assert [(message.role, message.content) for message in messages[2:]] == [
         ("assistant", "reply 1"),
         ("user", "message 2"),
         ("user", "latest question"),
@@ -282,6 +287,7 @@ async def test_agent_runner_injects_long_term_memory_into_llm_context():
         "memory.retrieval_limit": 2,
         "memory.auto_remember_conversations": False,
     }.get(key, default)
+    runner._memory_lock = asyncio.Lock()
     runner.session = Session(max_history_messages=10, recent_messages=5, summary_max_chars=200)
     runner.llm = MagicMock()
     runner.llm.chat = AsyncMock(return_value=type("Response", (), {"content": "memory aware answer", "tool_calls": None})())
@@ -309,6 +315,7 @@ async def test_agent_runner_remembers_successful_llm_exchanges():
         "memory.retrieval_limit": 3,
         "memory.auto_remember_conversations": True,
     }.get(key, default)
+    runner._memory_lock = asyncio.Lock()
     runner.session = Session(max_history_messages=10, recent_messages=5, summary_max_chars=200)
     runner.llm = MagicMock()
     runner.llm.chat = AsyncMock(return_value=type("Response", (), {"content": "stored answer", "tool_calls": None})())
@@ -332,6 +339,7 @@ async def test_agent_runner_gracefully_disables_memory_when_initialization_fails
     runner.config.get.side_effect = lambda key, default=None: {
         "memory.auto_index_directories": [],
     }.get(key, default)
+    runner._memory_lock = asyncio.Lock()
     runner.vector_store = MagicMock()
     runner.vector_store.initialize = AsyncMock(side_effect=RuntimeError("chromadb unavailable"))
     runner.document_indexer = MagicMock()
@@ -343,6 +351,51 @@ async def test_agent_runner_gracefully_disables_memory_when_initialization_fails
     assert runner.vector_store is None
     assert runner.document_indexer is None
     assert runner._memory_disabled_reason == "chromadb unavailable"
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_fallback_includes_system_persona():
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.config = MagicMock()
+    runner.config.get.side_effect = lambda key, default=None: {
+        "memory.retrieval_limit": 3,
+        "memory.auto_remember_conversations": False,
+    }.get(key, default)
+    runner._memory_lock = asyncio.Lock()
+    runner.session = Session()
+    runner.llm = MagicMock()
+    runner.llm.is_available.return_value = True
+    runner.llm.chat = AsyncMock(return_value=type("Response", (), {"content": "ok", "tool_calls": None})())
+    runner.vector_store = None
+    runner._memory_ready = False
+    
+    await runner._fallback_to_llm("hello")
+    
+    # Check that llm.chat was called with messages
+    args, kwargs = runner.llm.chat.call_args
+    messages = args[0]
+    
+    # Verify the system persona is present
+    system_messages = [m for m in messages if m.role == "system"]
+    assert any("You are FRIDAY" in m.content for m in system_messages)
+    assert any("privacy-first local AI assistant" in m.content for m in system_messages)
+
+
+@pytest.mark.asyncio
+async def test_agent_router_general_chat_includes_system_persona():
+    from friday.agents.router import AgentRouter
+    llm = MagicMock()
+    llm.chat = AsyncMock(return_value=type("Response", (), {"content": "hi", "tool_calls": None})())
+    router = AgentRouter(llm)
+    
+    await router._run_general_chat("hello", [])
+    
+    args, kwargs = llm.chat.call_args
+    messages = args[0]
+    
+    system_messages = [m for m in messages if m.role == "system"]
+    assert any("You are FRIDAY" in m.content for m in system_messages)
+    assert any("privacy-first local AI assistant" in m.content for m in system_messages)
 
 
 from friday.agents.code_assistant import CodeAssistantAgent
