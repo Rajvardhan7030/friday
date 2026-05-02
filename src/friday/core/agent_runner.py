@@ -127,6 +127,9 @@ class Session:
 
 class AgentRunner:
     """The 'Brain' that decides how to handle an input."""
+    
+    _mcp_ready: bool = False
+    _mcp_lock: asyncio.Lock = None
 
     def __init__(self, config: Config):
         self.config = config
@@ -140,6 +143,8 @@ class AgentRunner:
         self._memory_ready = False
         self._memory_disabled_reason: Optional[str] = None
         self._memory_lock = asyncio.Lock()
+        self._mcp_ready = False
+        self._mcp_lock = asyncio.Lock()
 
         try:
             engine_type = config.get("llm.engine", "ollama")
@@ -239,7 +244,28 @@ class AgentRunner:
             await self.llm.aclose()
         if self.tts:
             await self.tts.aclose()
+        
+        from .mcp import mcp_client
+        await mcp_client.shutdown()
+        
         logger.info("AgentRunner resources closed.")
+
+    async def _ensure_mcp_ready(self) -> None:
+        """Initialize external MCP servers once."""
+        if self._mcp_lock is None:
+            self._mcp_lock = asyncio.Lock()
+            
+        async with self._mcp_lock:
+            if self._mcp_ready:
+                return
+            
+            from .mcp import mcp_client
+            server_configs = self.config.get("mcp_servers", {})
+            if server_configs:
+                logger.info(f"Initializing {len(server_configs)} external MCP servers...")
+                await mcp_client.initialize_external_servers(server_configs)
+            
+            self._mcp_ready = True
 
     def _setup_memory(self) -> None:
         """Prepare long-term memory components for lazy initialization."""
@@ -381,6 +407,9 @@ class AgentRunner:
         """Use the local LLM when no specific command is triggered, with MCP tool support."""
         from .mcp import mcp_client
         import json
+        
+        # Ensure MCP servers are started
+        await self._ensure_mcp_ready()
         
         logger.info("No command match. Falling back to LLM.")
         if self.llm is None or not self.llm.is_available():

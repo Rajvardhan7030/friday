@@ -146,6 +146,9 @@ class Config:
                 "api_key": "",
                 "api_base_url": "https://api.openai.com/v1",
             },
+            "mcp_servers": {
+                # Example: "layer-forge": {"command": "npx", "args": ["-y", "@bahadirbklg/layer-ai-mcp-server"], "env": {"LAYER_API_TOKEN": "...", "LAYER_WORKSPACE_ID": "..."}}
+            },
         }
 
     def _load_config(self) -> None:
