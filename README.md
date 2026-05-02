@@ -29,7 +29,7 @@ Open your terminal (Command Prompt on Windows, Terminal on Mac/Linux) and run:
 
 ```bash
 # Get the code
-git clone https://github.com/your-repo/friday.git
+git clone <repository-url>
 cd friday
 
 # Install FRIDAY
@@ -54,6 +54,13 @@ friday init
 Type `friday` to start chatting.
 - **Voice Mode**: Type `/voice on` to start talking. Type `/voice off` to go back to typing.
 - **Exit**: Type `/exit` or `/quit` when you're done.
+
+### 🗣️ Talking to FRIDAY (Natural Language)
+FRIDAY isn't just a command-line tool; she's a conversational assistant. In chat mode, you can use natural language for complex tasks:
+- **"Give me my morning digest"**: Gathers your unread emails, calendar events, and top news for a voiced briefing.
+- **"Clear the history"**: Resets the current conversation.
+- **"Who are you?"**: Ask about FRIDAY's identity and local-first mission.
+- **"Write a script to..."**: Triggers the **Code Assistant** to safely generate and run code for you.
 
 ### ❓ Quick Questions
 Ask a quick question without entering full chat mode:
@@ -80,7 +87,8 @@ friday model-scout
 | `friday doctor` | Runs a system health check (Hardware, STT, TTS, APIs). |
 | `friday model-scout` | Opens the hardware compatibility assessment tool. |
 | `friday ask "..."` | One-shot question mode (add `-v` for voice). |
-| `friday config` | View or modify configuration settings via CLI. |
+| `friday config list` | View all current configuration settings. |
+| `friday config set <key> <val>` | Modify a specific setting (e.g., `llm.primary_model`). |
 
 ---
 
@@ -90,8 +98,8 @@ If something isn't working right, don't worry! Here are the most common fixes:
 
 ### ❓ Connection Error or "Brain Foggy"
 - **Ollama Users**: Make sure **Ollama** is running in your taskbar.
-- **API Users**: Run `friday status` to check your provider. Ensure your API Key is correct in `config.yaml`.
-- **Gemini Users**: FRIDAY automatically sanitizes your parameters and strips model prefixes to avoid "400 Bad Request" errors.
+- **API Users**: Run `friday status` to check your provider. Ensure your API Key is correct in your `.env` file or `config.yaml`.
+- **Network Errors**: If using a cloud provider, check your internet connection.
 
 ### ❓ "I can't hear anything" / "She can't hear me"
 - Run `friday voice download` to ensure voice models are present.
@@ -108,7 +116,7 @@ If something isn't working right, don't worry! Here are the most common fixes:
 ## 🏗️ Technical Highlights
 
 - **🌍 Multi-Provider LLM**: Native support for **Ollama, OpenAI, Google Gemini, Mistral, Groq, and OpenRouter**.
-- **🛡️ Robust API Sanitization**: Specialized engines automatically strip prefixes (like `models/`) and sanitize unsupported parameters (like `presence_penalty` or `strict` schemas) before they hit provider endpoints.
+- **🛡️ Robust API Sanitization**: Specialized engines automatically strip prefixes (like `models/`) and sanitize unsupported parameters (like `presence_penalty` or `strict` schemas) before they hit provider endpoints (critical for **Gemini** compatibility).
 - **📱 Apple Silicon Optimized**: Full VRAM detection and Tok/s heuristics for Mac M1/M2/M3 chips.
 - **🚀 Vector Memory**: High-performance local document indexing using batch embeddings.
 

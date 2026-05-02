@@ -59,10 +59,16 @@ class AgentRouter:
         ])
         
         system_prompt = f"""
-You are the Intent Router for FRIDAY. Classify the query into a category.
+You are the Intent Router for FRIDAY. Classify the user query into the most appropriate category.
+
 Categories:
 {agent_descriptions}
-- general_chat: For greetings or topics not covered above.
+- general_chat: For greetings, general questions, or topics not covered above.
+
+Guidelines:
+- Use 'code_assistant' for: writing scripts, creating programs, executing Python code, "write a script to...", "create a python app that...".
+- Use 'system_command' for: terminal tasks, file operations (ls, cd, mkdir), system info, "run command...", "list files in...".
+- Use 'adaptive_rag' for: searching personal documents, "what does my notes say about...", "find info in my files".
 
 Respond ONLY with JSON: {{"agent": "category_name"}}
 """

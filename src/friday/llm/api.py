@@ -236,24 +236,20 @@ class GeminiEngine(APIEngine):
         return results[0]
 
     async def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        """Generate Gemini embeddings.
-
-        Gemini's OpenAI-compatible examples document a string input for embeddings,
-        so keep the common query path on that shape and fall back to per-item calls
-        for batches.
-        """
+        """Generate Gemini embeddings in parallel to reduce latency."""
         if not isinstance(texts, list):
             texts = [texts]
         texts = [str(t) for t in texts if t and str(t).strip()]
         if not texts:
             return []
-        if len(texts) == 1:
-            return await self._embed_payload(texts[0])
-
-        embeddings: List[List[float]] = []
-        for text in texts:
-            embeddings.extend(await self._embed_payload(text))
-        return embeddings
+        
+        # Use asyncio.gather to run requests in parallel
+        import asyncio
+        tasks = [self._embed_payload(text) for text in texts]
+        results = await asyncio.gather(*tasks)
+        
+        # results is a list of lists of embeddings (each _embed_payload returns a list of 1 embedding)
+        return [emb[0] for emb in results]
 
     async def _embed_payload(self, text: str) -> List[List[float]]:
         payload = {

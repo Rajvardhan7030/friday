@@ -117,9 +117,14 @@ class FridayCLI:
         if not self.voice_output_enabled:
             return
 
-        import re
-        # Clean text for TTS (remove all rich tags [tag]...[/tag] or [tag])
-        clean_text = re.sub(r"\[.*?\]", "", text)
+        from rich.text import Text
+        # Safely strip Rich markup while preserving legitimate brackets
+        try:
+            clean_text = Text.from_markup(text).plain
+        except Exception:
+            # Fallback if markup is malformed
+            import re
+            clean_text = re.sub(r"\[.*?\]", "", text)
         
         try:
             await self.tts.speak(clean_text, block=False)
@@ -149,14 +154,10 @@ async def voice_download():
     config = Config()
     
     selected_tts_model = config.get("voice.tts.model")
+    tts_urls = config.get("voice.urls.tts", {})
+    stt_url = config.get("voice.urls.stt")
     
-    # Map model names to their URLs
-    tts_urls = {
-        "en_GB-jenny_dioco-medium": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/jenny_dioco/medium/en_GB-jenny_dioco-medium.onnx",
-        "en_GB-alan-medium": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx"
-    }
-    
-    url = tts_urls.get(selected_tts_model, tts_urls["en_GB-jenny_dioco-medium"])
+    url = tts_urls.get(selected_tts_model, "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/jenny_dioco/medium/en_GB-jenny_dioco-medium.onnx")
     
     models = {
         f"TTS ({selected_tts_model})": (
@@ -168,7 +169,7 @@ async def voice_download():
             Path(config.get("voice.tts.model_path")).with_suffix(".onnx.json")
         ),
         "STT (Vosk)": (
-            "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+            stt_url,
             Path(config.get("voice.stt.model_path")).with_suffix(".zip")
         )
     }

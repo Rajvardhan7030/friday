@@ -1,9 +1,10 @@
 """Abstract Base Agent class."""
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from pydantic import BaseModel, Field
 from ..llm.engine import LLMEngine
+from ..core.config import Config
 
 class Context(BaseModel):
     """Execution context for agents."""
@@ -21,7 +22,7 @@ class AgentResult(BaseModel):
 class BaseAgent(ABC):
     """Abstract Base Agent all agents must implement."""
     
-    def __init__(self, llm_engine: LLMEngine, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, llm_engine: LLMEngine, config: Optional[Union[Config, Dict[str, Any]]] = None):
         self.llm = llm_engine
         self.config = config or {}
 

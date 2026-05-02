@@ -22,6 +22,7 @@ class CodeState(TypedDict):
     retries: int
     max_retries: int
     error: Optional[str]
+    history: List[Dict[str, str]]
 
 class CodeAssistantAgent(BaseAgent):
     """
@@ -49,7 +50,8 @@ class CodeAssistantAgent(BaseAgent):
             "output": "",
             "retries": 0,
             "max_retries": 3,
-            "error": None
+            "error": None,
+            "history": ctx.chat_history or []
         }
 
         # Step 1: Plan
@@ -81,12 +83,25 @@ class CodeAssistantAgent(BaseAgent):
         return self._format_result(state)
 
     async def _plan(self, state: CodeState) -> CodeState:
-        prompt = f"Break this task into steps for a Python script: {state['task']}\nRespond with pseudocode steps."
-        res = await self.llm.chat([Message(role="user", content=prompt)])
+        messages = [
+            Message(role=m["role"], content=m["content"]) 
+            for m in state["history"][-6:]
+        ]
+        messages.append(Message(
+            role="user", 
+            content=f"Break this task into steps for a Python script: {state['task']}\nRespond with pseudocode steps."
+        ))
+        
+        res = await self.llm.chat(messages)
         state["plan"] = res.content
         return state
 
     async def _generate_code(self, state: CodeState) -> CodeState:
+        messages = [
+            Message(role=m["role"], content=m["content"]) 
+            for m in state["history"][-6:]
+        ]
+        
         prompt = f"""Write a Python script based on this plan:
 {state['plan']}
 
@@ -100,9 +115,19 @@ Respond ONLY with the code wrapped in ```python blocks."""
         if state["error"]:
             prompt += f"\n\nPrevious Error to fix: {state['error']}\nPrevious Code:\n{state['code']}"
 
-        res = await self.llm.chat([Message(role="user", content=prompt)])
-        code_match = re.search(r"```python\n(.*?)\n```", res.content, re.DOTALL)
-        state["code"] = code_match.group(1) if code_match else res.content
+        messages.append(Message(role="user", content=prompt))
+        
+        res = await self.llm.chat(messages)
+        
+        # Robust code extraction
+        code_match = re.search(r"```(?:python)?\s*(.*?)\s*```", res.content, re.DOTALL | re.IGNORECASE)
+        if code_match:
+            state["code"] = code_match.group(1).strip()
+        else:
+            # Fallback: if no code block, try to find lines that look like code or just take the whole thing
+            # but strip common conversational filler if it's very short
+            state["code"] = res.content.strip()
+            
         return state
 
     async def _debug(self, state: CodeState) -> CodeState:

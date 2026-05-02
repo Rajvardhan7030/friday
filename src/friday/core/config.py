@@ -5,6 +5,7 @@ import logging
 import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
+from dotenv import load_dotenv
 
 from .exceptions import ConfigurationError
 
@@ -65,6 +66,7 @@ class Config:
 
     def __init__(self, config_path: Optional[Union[str, Path]] = None):
         """Initialize configuration from a file or use defaults."""
+        load_dotenv()
         self.base_dir = self.DEFAULT_BASE_DIR
         self.config_path = Path(config_path) if config_path else self.DEFAULT_CONFIG_PATH
         self._data: Dict[str, Any] = self._get_default_values()
@@ -100,10 +102,25 @@ class Config:
                     "energy_threshold": 300,
                     "device_index": None,
                 },
+                "urls": {
+                    "tts": {
+                        "en_GB-jenny_dioco-medium": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/jenny_dioco/medium/en_GB-jenny_dioco-medium.onnx",
+                        "en_GB-alan-medium": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx"
+                    },
+                    "stt": "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+                }
             },
             "security": {
                 "sandbox_timeout": 30,
                 "sandbox_backend": "unshare",  # or 'docker', 'none'
+                "shell_command_timeout": 30,
+                "shell_command_allow_sudo": False,
+                "shell_command_blocked_patterns": [
+                    "rm -rf /",
+                    "mkfs",
+                    "dd if=/dev/zero",
+                    ":(){ :|:& };:"
+                ],
             },
             "session": {
                 "max_history_messages": 100,
@@ -271,7 +288,7 @@ def download_model(url: str, dest: Union[str, Path]) -> None:
 
     logger.info(f"Downloading model from {url} to {dest_path}")
     
-    response = requests.get(url, stream=True)
+    response = requests.get(url, stream=True, timeout=30)
     response.raise_for_status()
     total_size = int(response.headers.get('content-length', 0))
     

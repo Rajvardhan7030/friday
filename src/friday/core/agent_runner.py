@@ -183,7 +183,18 @@ class AgentRunner:
             retriever = LocalDocumentRetriever(self.vector_store, self.document_indexer)
             self.router.register_agent(AdaptiveRAGAgent(self.llm, retriever))
 
-        # 2. Register Research Agent from plugins
+        # 2. Register Code Assistant
+        from ..agents.code_assistant import CodeAssistantAgent
+        from ..agents.sandbox_executor import SandboxExecutor
+        self.router.register_agent(
+            CodeAssistantAgent(self.llm, SandboxExecutor(self.config))
+        )
+
+        # 3. Register System Command Agent
+        from ..agents.system_command_agent import SystemCommandAgent
+        self.router.register_agent(SystemCommandAgent(self.llm, self.config))
+
+        # 4. Register Research Agent from plugins
         try:
             from ..plugins.research.main import ResearchAgent
             if self.vector_store:
