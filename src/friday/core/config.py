@@ -5,8 +5,6 @@ import logging
 import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
-from dotenv import load_dotenv
-
 from .exceptions import ConfigurationError
 
 logger = logging.getLogger(__name__)
@@ -66,7 +64,6 @@ class Config:
 
     def __init__(self, config_path: Optional[Union[str, Path]] = None):
         """Initialize configuration from a file or use defaults."""
-        load_dotenv()
         self.base_dir = self.DEFAULT_BASE_DIR
         self.config_path = Path(config_path) if config_path else self.DEFAULT_CONFIG_PATH
         self._data: Dict[str, Any] = self._get_default_values()
@@ -147,8 +144,12 @@ class Config:
                 "api_base_url": "https://api.openai.com/v1",
             },
             "mcp_servers": {
-                # Example: "layer-forge": {"command": "npx", "args": ["-y", "@bahadirbklg/layer-ai-mcp-server"], "env": {"LAYER_API_TOKEN": "...", "LAYER_WORKSPACE_ID": "..."}}
             },
+            "skills": {
+                "browser": {
+                    "daemon_url": "http://localhost:9000"
+                }
+            }
         }
 
     def _load_config(self) -> None:

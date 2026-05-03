@@ -40,6 +40,7 @@ class MCPClient:
         
         self._lock = asyncio.Lock()
         self._initialized = False
+        self._shutdown = False
 
     def register_tool(self, tool: MCPTool, handler: Callable[..., Awaitable[Any]]):
         """Registers an internal tool."""
@@ -77,38 +78,55 @@ class MCPClient:
             self._initialized = True
 
     async def _connect_to_server(self, name: str, params: StdioServerParameters):
-        """Internal helper to connect to a single MCP server."""
-        try:
-            logger.info(f"Connecting to external MCP server {name}...")
-            
-            # This is a context manager, but we want to keep it open
-            # So we manually manage the exit if possible, or use a long-lived task
-            async with stdio_client(params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    self._external_sessions[name] = session
-                    
-                    # Discover tools from this server
-                    tools_response = await session.list_tools()
-                    for tool in tools_response.tools:
-                        full_name = tool.name # We might want to namespace this if collisions occur
-                        self._external_tool_map[full_name] = name
-                        self._external_tool_metadata[full_name] = MCPTool(
-                            name=tool.name,
-                            description=tool.description,
-                            inputSchema=MCPToolSchema(**tool.inputSchema),
-                            source=name
-                        )
-                        logger.info(f"Registered external tool '{full_name}' from server '{name}'")
-                    
-                    # Keep the session alive until the application shuts down
-                    # We wait forever or until the session is closed
-                    while name in self._external_sessions:
-                        await asyncio.sleep(1)
+        """Internal helper to connect to a single MCP server with reconnection logic."""
+        retry_delay = 1
+        max_delay = 60
+        
+        while not self._shutdown:
+            try:
+                logger.info(f"Connecting to external MCP server {name}...")
+                
+                async with stdio_client(params) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        self._external_sessions[name] = session
                         
-        except Exception as e:
-            logger.error(f"Error in MCP server session '{name}': {e}")
+                        # Discover tools from this server
+                        tools_response = await session.list_tools()
+                        for tool in tools_response.tools:
+                            full_name = tool.name # We might want to namespace this if collisions occur
+                            self._external_tool_map[full_name] = name
+                            self._external_tool_metadata[full_name] = MCPTool(
+                                name=tool.name,
+                                description=tool.description,
+                                inputSchema=MCPToolSchema(**tool.inputSchema),
+                                source=name
+                            )
+                            logger.info(f"Registered external tool '{full_name}' from server '{name}'")
+                        
+                        retry_delay = 1 # Reset delay on successful connection
+                        
+                        # Keep the session alive until the application shuts down or connection fails
+                        while not self._shutdown and name in self._external_sessions:
+                            await asyncio.sleep(1)
+                            
+            except Exception as e:
+                if not self._shutdown:
+                    logger.error(f"Error in MCP server session '{name}': {e}")
+                
+            # Cleanup on disconnect
             self._external_sessions.pop(name, None)
+            tools_to_remove = [tname for tname, sname in self._external_tool_map.items() if sname == name]
+            for tname in tools_to_remove:
+                self._external_tool_map.pop(tname, None)
+                self._external_tool_metadata.pop(tname, None)
+                
+            if self._shutdown:
+                break
+                
+            logger.info(f"Retrying connection to '{name}' in {retry_delay} seconds...")
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, max_delay)
 
     def list_tools(self) -> List[MCPTool]:
         """Returns a list of all registered tools (internal + external)."""
@@ -166,6 +184,7 @@ class MCPClient:
     async def shutdown(self):
         """Closes all external sessions."""
         async with self._lock:
+            self._shutdown = True
             names = list(self._external_sessions.keys())
             for name in names:
                 session = self._external_sessions.pop(name)

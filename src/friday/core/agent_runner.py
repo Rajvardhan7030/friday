@@ -172,11 +172,32 @@ class AgentRunner:
             self.tts = None
         
         self._load_agents()
+        self._load_skills()
         self._setup_memory()
         self.router: Optional[AgentRouter] = None
         self._setup_router()
 
+    def _load_skills(self):
+        """Initialize and register skills as MCP tools."""
+        from ..skills.web_search_skill import WebSearchSkill
+        from ..skills.browser_skill import BrowserSkill
+        
+        # Initialize skills
+        self.skills = {
+            "web_search": WebSearchSkill(),
+            "browser_control": BrowserSkill(self.config.get("skills.browser.daemon_url", "http://localhost:9000"))
+        }
+        
+        # Register as MCP tools
+        for skill in self.skills.values():
+            try:
+                skill.register_mcp()
+                logger.info(f"Skill '{skill.name}' registered as MCP tool.")
+            except Exception as e:
+                logger.warning(f"Failed to register skill '{skill.name}': {e}")
+
     def _setup_router(self):
+
         """Initialize the agent router and register specialized agents."""
         if self.llm is None:
             return
@@ -207,13 +228,8 @@ class AgentRunner:
         except (ImportError, ModuleNotFoundError):
             logger.debug("ResearchAgent plugin not loaded into router.")
 
-        # 3. Register Skeleton Agents
-        from ..agents.router import LangGraphAgent, AutoGenAgent, CrewAIAgent
-        self.router.register_agent(LangGraphAgent(self.llm))
-        self.router.register_agent(AutoGenAgent(self.llm))
-        self.router.register_agent(CrewAIAgent(self.llm))
-
     def _load_agents(self):
+
         """Discover and import agent modules to trigger registry decorators."""
         try:
             agents_package = import_module("friday.agents")

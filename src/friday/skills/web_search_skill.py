@@ -10,8 +10,13 @@ from typing import Any, Dict, List
 import httpx
 
 from .base import BaseSkill, SkillResult
+from ..core.mcp import MCPToolSchema
+from pydantic import Field
 
 logger = logging.getLogger(__name__)
+
+class WebSearchSchema(MCPToolSchema):
+    query: str = Field(..., description="The search query to look up on the web.")
 
 class WebSearchSkill(BaseSkill):
     """Async web search skill using DuckDuckGo's HTML endpoint."""
@@ -31,6 +36,10 @@ class WebSearchSkill(BaseSkill):
     @property
     def description(self) -> str:
         return "Searches the web for information using DuckDuckGo (no API key required)."
+
+    @property
+    def input_schema(self) -> MCPToolSchema:
+        return WebSearchSchema()
 
     async def execute(self, query: str, context: Dict[str, Any]) -> SkillResult:
         """Execute web search query with rate limiting and caching."""

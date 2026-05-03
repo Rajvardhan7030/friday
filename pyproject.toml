@@ -30,7 +30,6 @@ dependencies = [
     "vosk>=0.3.45",
     "docker>=7.0.0",
     "textual>=0.40.0",
-    "python-dotenv>=1.0.0",
     "mcp>=0.1.0",
 ]
 

@@ -98,7 +98,7 @@ If something isn't working right, don't worry! Here are the most common fixes:
 
 ### ❓ Connection Error or "Brain Foggy"
 - **Ollama Users**: Make sure **Ollama** is running in your taskbar.
-- **API Users**: Run `friday status` to check your provider. Ensure your API Key is correct in your `.env` file or `config.yaml`.
+- **API Users**: Run `friday status` to check your provider. Ensure your API Key is correct in your `config.yaml`.
 - **Network Errors**: If using a cloud provider, check your internet connection.
 
 ### ❓ "I can't hear anything" / "She can't hear me"
@@ -119,50 +119,6 @@ If something isn't working right, don't worry! Here are the most common fixes:
 - **🛡️ Robust API Sanitization**: Specialized engines automatically strip prefixes (like `models/`) and sanitize unsupported parameters (like `presence_penalty` or `strict` schemas) before they hit provider endpoints (critical for **Gemini** compatibility).
 - **📱 Apple Silicon Optimized**: Full VRAM detection and Tok/s heuristics for Mac M1/M2/M3 chips.
 - **🚀 Vector Memory**: High-performance local document indexing using batch embeddings.
-- **🔌 MCP Support**: Connect external tools via the **Model Context Protocol**, including **Layer Forge** for game asset generation.
-
----
-
-## 🎮 Integration: Layer Forge (AI Game Assets)
-
-FRIDAY supports **Layer.ai Forge** via the Model Context Protocol (MCP). This allows her to generate high-quality 2D game assets (sprites, backgrounds, characters) directly from your conversation.
-
-### 1. Setup Layer Forge
-1.  Sign up at [Layer.ai](https://layer.ai) and get your **API Token** and **Workspace ID** from the dashboard.
-2.  Ensure you have **Node.js** installed (for `npx`).
-
-### 2. Configure FRIDAY
-Open your `.env` file (or `config.yaml`) and add your Layer credentials:
-
-```text
-# In .env
-LAYER_API_TOKEN=your_token_here
-LAYER_WORKSPACE_ID=your_workspace_id_here
-```
-
-Then, configure the MCP server in `config.yaml` using the `friday config set` command:
-```bash
-friday config set mcp_servers.layer-forge.command "npx"
-friday config set mcp_servers.layer-forge.args '["-y", "@bahadirbklg/layer-ai-mcp-server"]'
-```
-
-### 3. Usage
-Once configured, you can ask FRIDAY to generate assets in natural language:
-- *"Friday, generate a 2D sprite of a cyber-punk ninja in a side-view pose."*
-- *"Create a beautiful fantasy forest background for a platformer game."*
-
-FRIDAY will call the Layer Forge tools, optimize your prompt, and handle the generation process for you.
-
----
-
-## 📧 Optional: Connecting Accounts
-
-To make FRIDAY even smarter (like reading your real emails for a Morning Digest), you can add your details to a `.env` file in the project folder:
-
-```text
-IMAP_SERVER=imap.gmail.com
-IMAP_USER=your-email@gmail.com
-IMAP_PASSWORD=your-app-password
-```
+- **🔌 MCP Support**: Connect external tools via the **Model Context Protocol**.
 
 For more support, please check the GitHub issues page.
