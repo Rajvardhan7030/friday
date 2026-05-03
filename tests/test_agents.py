@@ -291,6 +291,7 @@ async def test_agent_runner_injects_long_term_memory_into_llm_context():
     runner.session = Session(max_history_messages=10, recent_messages=5, summary_max_chars=200)
     runner.llm = MagicMock()
     runner.llm.chat = AsyncMock(return_value=type("Response", (), {"content": "memory aware answer", "tool_calls": None})())
+    runner.llm.embed = AsyncMock(return_value=[0.1] * 768)
     runner.vector_store = MagicMock()
     runner.vector_store.similarity_search = AsyncMock(return_value=[
         {"content": "Friday likes local-first tools.", "metadata": {"source": "notes.md"}}
@@ -319,9 +320,13 @@ async def test_agent_runner_remembers_successful_llm_exchanges():
     runner.session = Session(max_history_messages=10, recent_messages=5, summary_max_chars=200)
     runner.llm = MagicMock()
     runner.llm.chat = AsyncMock(return_value=type("Response", (), {"content": "stored answer", "tool_calls": None})())
+    runner.llm.embed = AsyncMock(return_value=[0.1] * 768)
     runner.vector_store = MagicMock()
     runner.vector_store.similarity_search = AsyncMock(return_value=[])
     runner.vector_store.add_documents = AsyncMock()
+    runner.conversation_memory = MagicMock()
+    runner.conversation_memory.add_message = AsyncMock()
+    runner.memory_consolidator = MagicMock()
     runner.document_indexer = MagicMock()
     runner._memory_ready = True
     runner._memory_disabled_reason = None

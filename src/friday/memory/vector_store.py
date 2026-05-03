@@ -2,6 +2,7 @@
 
 import logging
 import uuid
+import asyncio
 from typing import List, Dict, Any, Optional
 from ..llm.engine import LLMEngine
 
@@ -17,36 +18,68 @@ logger = logging.getLogger(__name__)
 class VectorStore:
     """Wrapper around ChromaDB for local vector storage."""
 
-    def __init__(self, persist_directory: str, llm_engine: LLMEngine):
+    def __init__(self, persist_directory: str, llm_engine: LLMEngine, default_collection: str = "friday_memory"):
         self.persist_directory = persist_directory
         self.llm = llm_engine
         self.client = None
         self.collection = None
+        self.default_collection = default_collection
+        self._collections: Dict[str, Any] = {}
+        self._lock = asyncio.Lock()
 
-    async def initialize(self) -> None:
+    async def initialize(self, collection_name: Optional[str] = None) -> None:
         """Explicitly initialize the ChromaDB client and collection."""
         if chromadb is None or Settings is None:
             raise RuntimeError("The 'chromadb' package is not installed. Install project dependencies to use vector storage.")
-        if self.client is None:
-            self.client = chromadb.PersistentClient(
-                path=self.persist_directory,
-                settings=Settings(allow_reset=True)
-            )
-            self.collection = self.client.get_or_create_collection(
-                name="friday_memory",
-                metadata={"hnsw:space": "cosine"}
-            )
-        logger.info(f"VectorStore initialized at {self.persist_directory}")
+        
+        async with self._lock:
+            if self.client is None:
+                self.client = chromadb.PersistentClient(
+                    path=self.persist_directory,
+                    settings=Settings(allow_reset=True)
+                )
+            
+            name = collection_name or self.default_collection
+            if name not in self._collections:
+                self._collections[name] = self.client.get_or_create_collection(
+                    name=name,
+                    metadata={"hnsw:space": "cosine"}
+                )
+            
+            self.collection = self._collections[name]
+        logger.info(f"VectorStore collection '{name}' initialized at {self.persist_directory}")
+
+    async def get_collection(self, name: str) -> Any:
+        """Get or create a specific collection."""
+        async with self._lock:
+            if self.client is None:
+                self.client = chromadb.PersistentClient(
+                    path=self.persist_directory,
+                    settings=Settings(allow_reset=True)
+                )
+            
+            if name not in self._collections:
+                self._collections[name] = self.client.get_or_create_collection(
+                    name=name,
+                    metadata={"hnsw:space": "cosine"}
+                )
+            return self._collections[name]
 
     async def add_documents(
         self, 
         documents: List[str], 
         metadatas: Optional[List[Dict[str, Any]]] = None,
-        ids: Optional[List[str]] = None
+        ids: Optional[List[str]] = None,
+        collection_name: Optional[str] = None
     ) -> None:
         """Add documents to the vector store with embeddings."""
-        if self.collection is None:
+        target_collection = self.collection
+        if collection_name:
+            target_collection = await self.get_collection(collection_name)
+        
+        if target_collection is None:
             await self.initialize()
+            target_collection = self.collection
 
         if not documents:
             return
@@ -60,7 +93,8 @@ class VectorStore:
 
             valid_ids = ids if ids else [str(uuid.uuid4()) for _ in range(len(documents))]
 
-            self.collection.add(
+            await asyncio.to_thread(
+                target_collection.add,
                 embeddings=embeddings,
                 documents=documents,
                 metadatas=metadatas if metadatas else None,
@@ -73,16 +107,25 @@ class VectorStore:
         self, 
         query: str, 
         k: int = 5, 
-        filter: Optional[Dict[str, Any]] = None
+        filter: Optional[Dict[str, Any]] = None,
+        collection_name: Optional[str] = None,
+        query_embedding: Optional[List[float]] = None
     ) -> List[Dict[str, Any]]:
         """Search for similar documents."""
-        if self.collection is None:
+        target_collection = self.collection
+        if collection_name:
+            target_collection = await self.get_collection(collection_name)
+
+        if target_collection is None:
             await self.initialize()
+            target_collection = self.collection
 
         try:
-            query_embedding = await self.llm.embed(query)
+            if query_embedding is None:
+                query_embedding = await self.llm.embed(query)
             
-            results = self.collection.query(
+            results = await asyncio.to_thread(
+                target_collection.query,
                 query_embeddings=[query_embedding],
                 n_results=k,
                 where=filter

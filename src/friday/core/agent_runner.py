@@ -13,14 +13,16 @@ from .registry import registry
 from .plugin import plugin_manager
 from .config import Config
 from .exceptions import ModelNotFoundError
-from ..llm.local import LocalEngine
 from ..llm.api import create_api_engine
 from ..llm.engine import Message
+from ..llm.local import LocalEngine
+from ..memory.consolidator import MemoryConsolidator
+from ..memory.conversation import ConversationMemory
 from ..memory.document_indexer import DocumentIndexer
 from ..memory.vector_store import VectorStore
 from ..voice.tts import TTSEngine
-from ..agents.router import AgentRouter
 from ..agents.adaptive_rag import AdaptiveRAGAgent
+from ..agents.router import AgentRouter
 from ..agents.tools import LocalDocumentRetriever
 
 logger = logging.getLogger(__name__)
@@ -139,6 +141,8 @@ class AgentRunner:
             summary_max_chars=config.get("session.summary_max_chars", 4000),
         )
         self.vector_store: Optional[VectorStore] = None
+        self.conversation_memory: Optional[ConversationMemory] = None
+        self.memory_consolidator: Optional[MemoryConsolidator] = None
         self.document_indexer: Optional[DocumentIndexer] = None
         self._memory_ready = False
         self._memory_disabled_reason: Optional[str] = None
@@ -256,6 +260,13 @@ class AgentRunner:
 
     async def aclose(self):
         """Shutdown engines and close connections."""
+        if self.memory_consolidator and self.session.session_id:
+            logger.info(f"Consolidating memory for session {self.session.session_id} before shutdown...")
+            try:
+                await self.memory_consolidator.consolidate_session(self.session.session_id)
+            except Exception as e:
+                logger.error(f"Memory consolidation failed during shutdown: {e}")
+
         if self.llm:
             await self.llm.aclose()
         if self.tts:
@@ -294,7 +305,17 @@ class AgentRunner:
             return
 
         persist_directory = self.config.get("memory.persist_directory")
+        db_path = Path(persist_directory) / "conversation.db"
+        ltm_collection = self.config.get("memory.ltm_collection", "ltm_memory")
+        
         self.vector_store = VectorStore(persist_directory, self.llm)
+        self.conversation_memory = ConversationMemory(str(db_path))
+        self.memory_consolidator = MemoryConsolidator(
+            self.llm, 
+            self.vector_store, 
+            self.conversation_memory,
+            ltm_collection=ltm_collection
+        )
         self.document_indexer = DocumentIndexer(self.vector_store)
 
     async def _ensure_memory_ready(self) -> None:
@@ -309,12 +330,16 @@ class AgentRunner:
                 
             try:
                 await self.vector_store.initialize()
+                if self.conversation_memory:
+                    await self.conversation_memory.initialize()
                 await self._auto_index_memory_directories()
                 self._memory_ready = True
             except Exception as e:
                 self._memory_disabled_reason = str(e)
                 self.vector_store = None
                 self.document_indexer = None
+                self.conversation_memory = None
+                self.memory_consolidator = None
                 logger.warning("Long-term memory unavailable: %s", e)
 
     async def _auto_index_memory_directories(self) -> None:
@@ -334,21 +359,38 @@ class AgentRunner:
         if self.vector_store is None:
             return None
 
-        memory_results = await self.vector_store.similarity_search(
+        # Pre-compute embedding once to avoid redundant LLM calls
+        query_embedding = await self.llm.embed(text)
+
+        # Search MTM (Conversations)
+        mtm_results = await self.vector_store.similarity_search(
             text,
             k=self.config.get("memory.retrieval_limit", 3),
+            query_embedding=query_embedding
         )
-        if not memory_results:
+        
+        # Search LTM (Extracted Facts)
+        ltm_results = await self.vector_store.similarity_search(
+            text,
+            k=2,
+            collection_name=self.config.get("memory.ltm_collection", "ltm_memory"),
+            query_embedding=query_embedding
+        )
+        
+        if not mtm_results and not ltm_results:
             return None
 
         memory_lines = []
-        for result in memory_results:
+        for result in ltm_results:
+            memory_lines.append(f"Factual Knowledge: {result['content']}")
+        
+        for result in mtm_results:
             source = result["metadata"].get("source", "memory")
-            memory_lines.append(f"Source: {source}\nContent: {result['content']}")
+            memory_lines.append(f"Recent History (Source: {source}): {result['content']}")
 
         return Message(
             role="system",
-            content="Relevant long-term memory:\n\n" + "\n\n".join(memory_lines),
+            content="Relevant long-term memory and factual knowledge:\n\n" + "\n\n".join(memory_lines),
         )
 
     async def _remember_exchange(self, user_text: str, assistant_text: str) -> None:
@@ -360,6 +402,7 @@ class AgentRunner:
         if self.vector_store is None:
             return
 
+        # 1. Store in MTM (Vector Store - Chat Exchange)
         document = f"User: {user_text}\nAssistant: {assistant_text}"
         metadata = {
             "source": "conversation",
@@ -368,6 +411,11 @@ class AgentRunner:
         }
         doc_id = f"chat_{self.session.session_id}_{len(self.session.history)}"
         await self.vector_store.add_documents([document], [metadata], [doc_id])
+
+        # 2. Store in STM (SQLite - Full History)
+        if self.conversation_memory:
+            await self.conversation_memory.add_message(self.session.session_id, "user", user_text)
+            await self.conversation_memory.add_message(self.session.session_id, "assistant", assistant_text)
 
     async def handle_input(self, text: str) -> str:
         """Main entry point for processing any user input."""
