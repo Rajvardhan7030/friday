@@ -102,7 +102,7 @@ class APIEngine(LLMEngine):
         url = "chat/completions"
         payload = {
             "model": self._model_name,
-            "messages": [m.model_dump() for m in messages],
+            "messages": [m.model_dump(exclude_none=True) for m in messages],
         }
         if tools:
             payload["tools"] = tools
@@ -273,11 +273,26 @@ class GeminiEngine(APIEngine):
         unsupported = [
             "presence_penalty", "frequency_penalty", "logprobs", 
             "seed", "user", "store", "metadata", 
-            "service_tier", "modalities", "audio"
+            "service_tier", "modalities", "audio",
+            "parallel_tool_calls"
         ]
         for key in unsupported:
             payload.pop(key, None)
             
+        # Deep sanitize messages for Gemini requirements
+        if "messages" in payload and isinstance(payload["messages"], list):
+            for msg in payload["messages"]:
+                if not isinstance(msg, dict):
+                    continue
+                
+                # Gemini assistant messages with tool calls MUST have null content (not empty string)
+                if msg.get("role") == "assistant" and msg.get("tool_calls") and msg.get("content") == "":
+                    msg.pop("content")
+                    
+                # Ensure tool messages have tool_call_id
+                if msg.get("role") == "tool" and not msg.get("tool_call_id"):
+                    raise LLMError("Tool message is missing 'tool_call_id'. This is required for Gemini/OpenAI tool execution.")
+
         # Strip models/ prefix from model field if it crept back in
         if "model" in payload and isinstance(payload["model"], str) and payload["model"].startswith("models/"):
             payload["model"] = payload["model"][7:]

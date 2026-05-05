@@ -18,6 +18,16 @@ class MCPToolSchema(BaseModel):
     properties: Dict[str, Any] = Field(default_factory=dict)
     required: List[str] = Field(default_factory=list)
 
+    @classmethod
+    def from_model(cls, model: Any) -> "MCPToolSchema":
+        """Generates an MCPToolSchema from a Pydantic BaseModel."""
+        schema = model.model_json_schema()
+        return cls(
+            type=schema.get("type", "object"),
+            properties=schema.get("properties", {}),
+            required=schema.get("required", [])
+        )
+
 class MCPTool(BaseModel):
     """Metadata for an MCP Tool."""
     name: str

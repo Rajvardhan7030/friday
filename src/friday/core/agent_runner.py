@@ -46,9 +46,11 @@ class Session:
         self.session_id = uuid.uuid4().hex[:8]
         self._summarize_lock = asyncio.Lock()
 
-    def add_message(self, role: str, content: str, llm: Optional['LocalEngine'] = None):
+    def add_message(self, role: str, content: Optional[str] = None, llm: Optional['LocalEngine'] = None, **kwargs):
         """Add a message to the session history."""
-        self.history.append({"role": role, "content": content})
+        msg = {"role": role, "content": content}
+        msg.update(kwargs)
+        self.history.append(msg)
         if len(self.history) > self.max_history_messages:
             overflow = len(self.history) - self.max_history_messages
             archived_messages = self.history[:overflow]
@@ -59,10 +61,17 @@ class Session:
             else:
                 self._append_to_summary(archived_messages)
 
-    async def _summarize_messages(self, archived_messages: List[Dict[str, str]], llm: 'LocalEngine') -> None:
+    async def _summarize_messages(self, archived_messages: List[Dict[str, Any]], llm: 'LocalEngine') -> None:
         """Condense evicted messages into a structured semantic JSON summary."""
         async with self._summarize_lock:
-            lines = [f"{msg['role'].capitalize()}: {msg['content']}" for msg in archived_messages]
+            lines = []
+            for msg in archived_messages:
+                role = msg['role'].capitalize()
+                content = msg.get('content') or ""
+                if msg.get('tool_calls'):
+                    content += f" [Calls tools: {', '.join(tc.get('function', {}).get('name', '') for tc in msg['tool_calls'])}]"
+                lines.append(f"{role}: {content}")
+            
             chat_text = "\n".join(lines)
 
             current = self.history_summary if self.history_summary else "{}"
@@ -114,16 +123,24 @@ class Session:
             )
 
         recent_history = self.history[-self.recent_messages:] if self.recent_messages > 0 else []
-        messages.extend(Message(role=entry["role"], content=entry["content"]) for entry in recent_history)
+        
+        valid_fields = {"role", "content", "name", "tool_calls", "tool_call_id"}
+        for entry in recent_history:
+            # Filter only valid fields to avoid Pydantic ValidationError with extra data
+            filtered_entry = {k: v for k, v in entry.items() if k in valid_fields}
+            messages.append(Message(**filtered_entry))
         return messages
 
-    def _append_to_summary(self, archived_messages: List[Dict[str, str]]) -> None:
+    def _append_to_summary(self, archived_messages: List[Dict[str, Any]]) -> None:
         """Condense evicted messages into a rolling plain-text summary."""
         summary_lines = [self.history_summary] if self.history_summary else []
-        summary_lines.extend(
-            f"{message['role'].capitalize()}: {message['content']}"
-            for message in archived_messages
-        )
+        for message in archived_messages:
+            role = message['role'].capitalize()
+            content = message.get('content') or ""
+            if message.get('tool_calls'):
+                content += f" [Calls tools: {', '.join(tc.get('function', {}).get('name', '') for tc in message['tool_calls'])}]"
+            summary_lines.append(f"{role}: {content}")
+            
         combined_summary = "\n".join(line for line in summary_lines if line)
         self.history_summary = combined_summary[-self.summary_max_chars:]
 
@@ -393,8 +410,28 @@ class AgentRunner:
             content="Relevant long-term memory and factual knowledge:\n\n" + "\n\n".join(memory_lines),
         )
 
+    async def _add_to_history(self, role: str, content: Optional[str] = None, **kwargs) -> None:
+        """Add a message to both session history and persistent storage."""
+        # 1. In-memory session history
+        if hasattr(self, "session"):
+            self.session.add_message(role, content, llm=getattr(self, "llm", None), **kwargs)
+        
+        # 2. Persistent SQLite history
+        if hasattr(self, "config") and self.config.get("memory.enabled", True):
+            await self._ensure_memory_ready()
+            if getattr(self, "conversation_memory", None):
+                # Metadata for the database (excludes fields already stored in separate columns)
+                metadata = kwargs.copy()
+                metadata.pop("llm", None)
+                await self.conversation_memory.add_message(
+                    self.session.session_id, 
+                    role, 
+                    content or "", 
+                    metadata=metadata if metadata else None
+                )
+
     async def _remember_exchange(self, user_text: str, assistant_text: str) -> None:
-        """Persist completed exchanges for future retrieval."""
+        """Persist completed exchanges for future retrieval (Vector Store only)."""
         if not self.config.get("memory.auto_remember_conversations", True):
             return
 
@@ -402,7 +439,7 @@ class AgentRunner:
         if self.vector_store is None:
             return
 
-        # 1. Store in MTM (Vector Store - Chat Exchange)
+        # Store in MTM (Vector Store - Chat Exchange)
         document = f"User: {user_text}\nAssistant: {assistant_text}"
         metadata = {
             "source": "conversation",
@@ -412,11 +449,6 @@ class AgentRunner:
         doc_id = f"chat_{self.session.session_id}_{len(self.session.history)}"
         await self.vector_store.add_documents([document], [metadata], [doc_id])
 
-        # 2. Store in STM (SQLite - Full History)
-        if self.conversation_memory:
-            await self.conversation_memory.add_message(self.session.session_id, "user", user_text)
-            await self.conversation_memory.add_message(self.session.session_id, "assistant", assistant_text)
-
     async def handle_input(self, text: str) -> str:
         """Main entry point for processing any user input."""
         text = text.strip()
@@ -424,7 +456,7 @@ class AgentRunner:
             return "I'm listening, but I didn't hear anything."
 
         # Standardized: Add user message to history immediately
-        self.session.add_message("user", text, llm=self.llm)
+        await self._add_to_history("user", text)
 
         # 1. Check the Command Registry (Deterministic Logic)
         handler_data = registry.find_handler(text)
@@ -441,7 +473,7 @@ class AgentRunner:
                     config=self.config,
                     tts=self.tts,
                 )
-                self.session.add_message("assistant", str(result))
+                await self._add_to_history("assistant", str(result))
                 await self._remember_exchange(text, str(result))
                 return result
             except Exception as e:
@@ -457,7 +489,7 @@ class AgentRunner:
                     logger.info(f"Routing to specialized agent: {intent}")
                     agent_result = await self.router.route(text, self.session.history)
                     
-                    self.session.add_message("assistant", agent_result.content)
+                    await self._add_to_history("assistant", agent_result.content)
                     await self._remember_exchange(text, agent_result.content)
                     return agent_result.content
             except Exception as e:
@@ -503,10 +535,14 @@ class AgentRunner:
                 
                 if tool_calls:
                     # Assistant chose to call tools
-                    messages.append(Message(role="assistant", content=content))
+                    assistant_msg = Message(role="assistant", content=content, tool_calls=tool_calls)
+                    messages.append(assistant_msg)
+                    await self._add_to_history(**assistant_msg.model_dump(exclude_none=True))
+                    
                     for tool_call in tool_calls:
                         func_name = tool_call.get("function", {}).get("name")
                         func_args_str = tool_call.get("function", {}).get("arguments", "{}")
+                        tool_call_id = tool_call.get("id")
                         try:
                             # Ollama sometimes returns string args, sometimes dict
                             if isinstance(func_args_str, str):
@@ -523,20 +559,34 @@ class AgentRunner:
                             else:
                                 tool_result_str = str(tool_result)
                                 
-                            messages.append(Message(role="tool", content=tool_result_str))
+                            tool_msg = Message(
+                                role="tool", 
+                                content=tool_result_str, 
+                                tool_call_id=tool_call_id,
+                                name=func_name
+                            )
+                            messages.append(tool_msg)
+                            await self._add_to_history(**tool_msg.model_dump(exclude_none=True))
                         except Exception as e:
                             logger.error(f"Tool execution failed: {e}")
-                            messages.append(Message(role="tool", content=f"Error executing tool: {str(e)}"))
+                            error_msg = Message(
+                                role="tool", 
+                                content=f"Error executing tool: {str(e)}",
+                                tool_call_id=tool_call_id,
+                                name=func_name
+                            )
+                            messages.append(error_msg)
+                            await self._add_to_history(**error_msg.model_dump(exclude_none=True))
                     continue # Loop back to LLM with tool responses
                 else:
                     # No more tool calls, we have our final answer
-                    self.session.add_message("assistant", content)
+                    await self._add_to_history("assistant", content)
                     await self._remember_exchange(text, content)
                     return content
             
             # If max iterations reached
             final_msg = "I've reached my thinking limit on this task."
-            self.session.add_message("assistant", final_msg, llm=self.llm)
+            await self._add_to_history("assistant", final_msg)
             return final_msg
             
         except Exception as e:

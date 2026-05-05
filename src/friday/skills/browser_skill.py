@@ -3,19 +3,19 @@
 import logging
 import httpx
 from typing import Dict, Any, List, Optional
-from pydantic import Field
+from pydantic import Field, BaseModel
 
 from .base import BaseSkill, SkillResult
 from ..core.mcp import MCPToolSchema
 
 logger = logging.getLogger(__name__)
 
-class BrowserNavigateSchema(MCPToolSchema):
+class BrowserNavigateSchema(BaseModel):
     url: str = Field(..., description="The URL to navigate to")
     profile: str = Field("default", description="The browser profile to use")
     headless: bool = Field(True, description="Whether to run in headless mode")
 
-class BrowserActionSchema(MCPToolSchema):
+class BrowserActionSchema(BaseModel):
     type: str = Field(..., description="The action type: 'click' or 'type'")
     selector: str = Field(..., description="The CSS selector for the target element")
     value: str = Field("", description="The value to type (if applicable)")
@@ -89,7 +89,7 @@ class BrowserSkill(BaseSkill):
             MCPTool(
                 name="browser_navigate",
                 description="Navigate to a URL and extract text content.",
-                inputSchema=BrowserNavigateSchema()
+                inputSchema=MCPToolSchema.from_model(BrowserNavigateSchema)
             ),
             self._mcp_navigate_handler
         )
@@ -99,7 +99,7 @@ class BrowserSkill(BaseSkill):
             MCPTool(
                 name="browser_action",
                 description="Perform an action (click, type) on the current web page.",
-                inputSchema=BrowserActionSchema()
+                inputSchema=MCPToolSchema.from_model(BrowserActionSchema)
             ),
             self._mcp_action_handler
         )

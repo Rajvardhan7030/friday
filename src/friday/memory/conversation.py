@@ -1,7 +1,7 @@
 """SQLite-backed conversation history with automatic summarization."""
 
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Any, Optional
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, event
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -59,7 +59,7 @@ class ConversationMemory:
             session.add(msg)
             await session.commit()
 
-    async def get_history(self, session_id: str, limit: int = 20) -> List[Dict[str, str]]:
+    async def get_history(self, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Retrieve recent chat history."""
         from sqlalchemy import select
         async with self.session_factory() as session:
@@ -73,10 +73,13 @@ class ConversationMemory:
             messages = result.scalars().all()
             
             # Return in chronological order
-            return [
-                {"role": m.role, "content": m.content} 
-                for m in reversed(messages)
-            ]
+            history = []
+            for m in reversed(messages):
+                entry = {"role": m.role, "content": m.content}
+                if m.metadata_json:
+                    entry.update(m.metadata_json)
+                history.append(entry)
+            return history
 
     async def clear_history(self, session_id: str) -> None:
         """Clear history for a session."""
