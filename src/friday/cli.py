@@ -4,22 +4,23 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 
-from .core.config import Config
-from .core.agent_runner import AgentRunner
-from .core.exceptions import ModelNotFoundError
-from .utils.logging import setup_logging, ignore_stderr
-from .voice.tts import TTSEngine
-from .voice.stt import STTEngine
+from friday_model_scout.compatibility_engine import get_compatible_models
 
 # Model Scout Imports
-from friday_model_scout.hardware_scanner import scan_hardware
 from friday_model_scout.model_database import get_models
-from friday_model_scout.compatibility_engine import get_compatible_models
+
+from .core.agent_runner import AgentRunner
+from .core.config import Config
+from .core.exceptions import ModelNotFoundError
+from .core.hardware import get_hardware_profile, get_recommended_model
+from .utils.logging import ignore_stderr, setup_logging
+from .voice.stt import STTEngine
+from .voice.tts import TTSEngine
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ class FridayCLI:
         self.voice_output_enabled = voice_output_enabled
 
     @staticmethod
-    def parse_control_command(user_input: str) -> Optional[str]:
+    def parse_control_command(user_input: str) -> str | None:
         """Return a normalized interactive control command, if present."""
         normalized = " ".join(user_input.strip().split()).lower()
         command_map = {
@@ -133,9 +134,9 @@ class FridayCLI:
             pass
 
 
-def extract_voice_output_flag(args: List[str]) -> tuple[bool, List[str]]:
+def extract_voice_output_flag(args: list[str]) -> tuple[bool, list[str]]:
     """Split voice-output flags from the remaining CLI args."""
-    remaining_args: List[str] = []
+    remaining_args: list[str] = []
     voice_output_enabled = False
 
     for arg in args:
@@ -149,8 +150,9 @@ def extract_voice_output_flag(args: List[str]) -> tuple[bool, List[str]]:
 
 async def voice_download():
     """Download and extract voice models based on configuration."""
-    from .core.config import download_model
     import zipfile
+
+    from .core.config import download_model
     config = Config()
     
     selected_tts_model = config.get("voice.tts.model")
@@ -221,7 +223,7 @@ async def ollama_pull(model_name: str):
     except ImportError:
         console.print("[bold red]Ollama library not installed.[/bold red]")
 
-async def friday_config(args: List[str]):
+async def friday_config(args: list[str]):
     """Manage Friday configuration."""
     config = Config()
     
@@ -287,10 +289,11 @@ async def friday_init():
     else:
         config.set("llm.api_base_url", results["base_url"], save=False)
 
+    pulled_primary = False
     if results["engine"] == "ollama":
-        # 2. Hardware Detection using Model Scout
+        # 2. Hardware Detection
         with console.status("[bold green]Probing hardware...[/bold green]"):
-            profile = scan_hardware()
+            profile = await get_hardware_profile()
         
         console.print(f"• OS: [cyan]{profile.os}[/cyan] | Arch: [cyan]{profile.cpu_arch}[/cyan]")
         console.print(f"• RAM: [cyan]{profile.ram_gb:.1f} GB[/cyan]")
@@ -299,9 +302,12 @@ async def friday_init():
         else:
             console.print("• GPU: [yellow]None detected[/yellow] (Using CPU)")
 
-        # 3. Model Recommendations using Model Scout
+        # 3. Hardware Auto-tuning
+        suggested_model = get_recommended_model(profile)
+
+        # 4. Model Recommendations using Model Scout
         models = get_models()
-        scout_results = get_compatible_models(models, profile)
+        scout_results = get_compatible_models(models, profile.to_detailed())
         
         # Sort by score descending
         scout_results.sort(key=lambda x: x["compat"]["score"], reverse=True)
@@ -310,7 +316,7 @@ async def friday_init():
         ollama_results = [m for m in scout_results if m.get("ollama_name")]
         
         if not ollama_results:
-            recs = {"primary": "gemma2:2b", "fallback": "gemma2:2b", "embedding": DEFAULT_EMBED_MODEL}
+            recs = {"primary": suggested_model, "fallback": "gemma2:2b", "embedding": DEFAULT_EMBED_MODEL}
         else:
             best = ollama_results[0]
             # Fallback is a smaller model
@@ -322,15 +328,28 @@ async def friday_init():
                 "embedding": DEFAULT_EMBED_MODEL
             }
             
-            console.print(f"\n[bold]Model Scout Recommendation (Fit: {best['compat']['fit']}):[/bold]")
+            console.print(f"\n[bold blue]Hardware Auto-tune Suggestion:[/bold blue] [green]{suggested_model}[/green]")
+            console.print(f"[bold]Model Scout Recommendation (Fit: {best['compat']['fit']}):[/bold]")
             console.print(f"  - Primary (Chat): [green]{recs['primary']}[/green] (Score: {best['compat']['score']})")
             console.print(f"  - Fallback:       [green]{recs['fallback']}[/green]")
             console.print(f"  - Embedding:      [green]{recs['embedding']}[/green]")
 
-        if Confirm.ask("\nApply these model recommendations?"):
+        selection = Prompt.ask(
+            "\nSelect model configuration",
+            choices=["auto-tune", "model-scout", "manual"],
+            default="auto-tune"
+        )
+
+        if selection == "auto-tune":
+            config.set("llm.primary_model", suggested_model, save=False)
+            await ollama_pull(suggested_model)
+            pulled_primary = True
+        elif selection == "model-scout":
             config.set("llm.primary_model", recs['primary'], save=False)
             config.set("llm.fallback_model", recs['fallback'], save=False)
             config.set("llm.embedding_model", recs['embedding'], save=False)
+        else:
+            console.print("[dim]Manual configuration selected. Models will remain as chosen in Step 1.[/dim]")
     else:
         console.print(f"[green]{results.get('provider', 'API').capitalize()} Backend configured.[/green]")
 
@@ -357,7 +376,7 @@ async def friday_init():
         if Confirm.ask("\nWould you like to download the required voice models now?"):
             await voice_download()
             
-        if Confirm.ask(f"\nWould you like to pull the primary LLM ([cyan]{config.get('llm.primary_model')}[/cyan]) now?"):
+        if not pulled_primary and Confirm.ask(f"\nWould you like to pull the primary LLM ([cyan]{config.get('llm.primary_model')}[/cyan]) now?"):
             await ollama_pull(config.get("llm.primary_model"))
             
         if Confirm.ask(f"\nWould you like to pull the embedding model ([cyan]{config.get('llm.embedding_model')}[/cyan]) now?"):
@@ -446,10 +465,11 @@ async def friday_doctor():
     except Exception as e:
         console.print(f"• Audio Input: [red]ERROR[/red] ({e})")
 
-async def friday_model_scout(args: List[str]):
+async def friday_model_scout(args: list[str]):
     """Run the model-scout tool."""
-    from friday_model_scout.cli import run_scout
     import argparse
+
+    from friday_model_scout.cli import run_scout
 
     parser = argparse.ArgumentParser(prog="friday model-scout", description="Friday Model Scout")
     parser.add_argument("--json", action="store_true")
@@ -474,7 +494,7 @@ async def main(voice_output_enabled: bool = False):
     await cli.run()
 
 
-async def ask_mode(args: List[str], voice_output_enabled: bool = False):
+async def ask_mode(args: list[str], voice_output_enabled: bool = False):
     """Run a single-prompt ask flow."""
     cli = FridayCLI(voice_output_enabled=voice_output_enabled)
     console.print(Panel(
