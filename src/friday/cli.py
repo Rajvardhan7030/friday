@@ -95,7 +95,10 @@ class FridayCLI:
                 
                 # Output to console and voice
                 console.print(f"\n[bold green]Friday:[/bold green] {response}\n")
-                await self.speak(response)
+                
+                # Use agent-provided TTS content if available, otherwise use the full response
+                tts_text = self.runner.last_tts_content or response
+                await self.speak(tts_text)
 
             except KeyboardInterrupt:
                 break
@@ -112,14 +115,42 @@ class FridayCLI:
         if not self.voice_output_enabled:
             return
 
+        import re
         from rich.text import Text
-        # Safely strip Rich markup while preserving legitimate brackets
+
+        # 1. Handle Markdown links first: [text](url) -> text
+        # This prevents Rich from misinterpreting [text] as a markup tag
+        clean_text = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
+
+        # 2. Strip Rich markup
         try:
-            clean_text = Text.from_markup(text).plain
+            clean_text = Text.from_markup(clean_text).plain
         except Exception:
-            # Fallback if markup is malformed
-            import re
-            clean_text = re.sub(r"\[.*?\]", "", text)
+            clean_text = re.sub(r"\[.*?\]", "", clean_text)
+
+        # 3. Remove Markdown code blocks
+        clean_text = re.sub(r"```.*?```", "", clean_text, flags=re.DOTALL)
+        
+        # 4. Remove remaining URLs
+        clean_text = re.sub(r"https?://\S+", "", clean_text)
+        
+        # 5. Remove bold/italic/inline-code markers
+        clean_text = re.sub(r"(\*\*|__)(.*?)\1", r"\2", clean_text)
+        clean_text = re.sub(r"(\*|_)(.*?)\1", r"\2", clean_text)
+        clean_text = re.sub(r"`([^`]+)`", r"\1", clean_text)
+        
+        # 6. Normalize whitespace and remove common TTS "stutter" characters
+        # Replace ... and --- with space to avoid stuttering
+        clean_text = clean_text.replace("...", " ").replace("---", " ")
+        
+        # 7. Remove any leftover brackets (e.g., citations [1], [source: x])
+        clean_text = re.sub(r"\[.*?\]", "", clean_text)
+        
+        # 8. Final whitespace normalization
+        clean_text = re.sub(r"\s+", " ", clean_text).strip()
+
+        if not clean_text:
+            return
         
         try:
             await self.tts.speak(clean_text, block=block)
@@ -463,7 +494,10 @@ async def ask_mode(args: list[str], voice_output_enabled: bool = False):
 
     response = await cli.runner.handle_input(prompt)
     console.print(f"\n[bold green]Friday:[/bold green] {response}\n")
-    await cli.speak(response, block=True)
+    
+    # Use agent-provided TTS content if available, otherwise use the full response
+    tts_text = cli.runner.last_tts_content or response
+    await cli.speak(tts_text, block=True)
 
 def app():
     """Entry point for the friday CLI as defined in pyproject.toml."""

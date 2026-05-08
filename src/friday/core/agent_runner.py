@@ -473,6 +473,7 @@ class AgentRunner:
     async def handle_input(self, text: str) -> str:
         """Main entry point for processing any user input."""
         text = text.strip()
+        self._last_tts_content = None # Reset for each interaction
         if not text:
             return "I'm listening, but I didn't hear anything."
 
@@ -496,7 +497,7 @@ class AgentRunner:
                 )
                 await self._add_to_history("assistant", str(result))
                 await self._remember_exchange(text, str(result))
-                return result
+                return str(result)
             except Exception as e:
                 logger.error(f"Command {cmd.name} failed: {e}", exc_info=True)
                 return f"I encountered an error running '{cmd.name}': {str(e)}"
@@ -510,6 +511,7 @@ class AgentRunner:
                     logger.info(f"Routing to specialized agent: {intent}")
                     agent_result = await self.router.route(text, self.session.history)
                     
+                    self._last_tts_content = agent_result.metadata.get("tts_content")
                     await self._add_to_history("assistant", agent_result.content)
                     await self._remember_exchange(text, agent_result.content)
                     return agent_result.content
@@ -519,6 +521,11 @@ class AgentRunner:
 
         # 3. Fallback to LLM if no command matches
         return await self._fallback_to_llm(text)
+
+    @property
+    def last_tts_content(self) -> Optional[str]:
+        """Returns the voice-friendly summary of the last agent response, if any."""
+        return getattr(self, "_last_tts_content", None)
 
     async def _fallback_to_llm(self, text: str) -> str:
         """Use the local LLM when no specific command is triggered, with MCP tool support."""
