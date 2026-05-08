@@ -23,6 +23,15 @@ class LocalEngine(LLMEngine):
     def __init__(self, primary_model: str, fallback_model: str, base_url: str="http://localhost:11434"):
         if ollama is None:
             raise LLMError("The 'ollama' package is not installed. Install project dependencies to use the local LLM engine.")
+        
+        # Guard against using cloud models with the local engine
+        cloud_keywords = ["gpt-", "claude-", "gemini-", "mistral-large"]
+        if any(kw in primary_model.lower() for kw in cloud_keywords):
+            logger.warning(
+                f"Model '{primary_model}' looks like a cloud model but you are using the local Ollama engine. "
+                "If you intended to use a cloud provider, please run 'friday init' and select 'Cloud API'."
+            )
+            
         self._primary_model = primary_model
         self._fallback_model = fallback_model
         self.base_url = base_url
@@ -82,7 +91,12 @@ class LocalEngine(LLMEngine):
         # 4. Last resort: any available model
         try:
             available = await self.get_available_models()
-            last_resort_models = [m for m in available if m not in tried_models]
+            # Filter out models that definitely don't support chat (e.g. embedding models)
+            last_resort_models = [
+                m for m in available 
+                if m not in tried_models and "embed" not in m.lower()
+            ]
+            
             for model in last_resort_models:
                 logger.info(f"Using available model '{model}' as last resort.")
                 try:
@@ -90,18 +104,35 @@ class LocalEngine(LLMEngine):
                     self._known_chat_model = model
                     return res
                 except Exception as e:
+                    err_msg = str(e).lower()
+                    # If model doesn't support chat (400), just try the next one instead of failing entirely
+                    if "does not support chat" in err_msg or "400" in err_msg:
+                        logger.warning(f"Ollama model '{model}' does not support chat. Trying next available.")
+                        tried_models.append(model)
+                        continue
+                        
                     if not self._is_model_not_found_error(e):
                         logger.error(f"Ollama chat error with {model}: {e}")
                         raise LLMError(f"Local LLM engine failed: {e}") from e
+                    
                     logger.warning(f"Last-resort model '{model}' not found in Ollama.")
                     tried_models.append(model)
+        except LLMError:
+            raise
         except Exception as e:
             logger.error(f"Failed to list models for last resort: {e}")
 
-        missing = tried_models or [self._primary_model]
+        # Final failure: No models worked
+        if not tried_models:
+            raise LLMError(
+                f"No LLM models found in Ollama. "
+                "Please run 'ollama pull llama3' to install a default model."
+            )
+            
+        # If we tried models and they all failed, report the primary and fallback
         raise LLMError(
-            f"Model '{missing[-1]}' not found. "
-            f"Please run 'ollama pull {missing[-1]}' to install it."
+            f"Configured models ('{self._primary_model}', '{self._fallback_model}') were not found in Ollama, "
+            "and no other compatible chat models were available."
         )
 
     async def get_available_models(self) -> List[str]:
@@ -178,6 +209,12 @@ class LocalEngine(LLMEngine):
                     self._known_embed_model = model
                     return res
                 except Exception as e:
+                    err_msg = str(e).lower()
+                    if "does not support embeddings" in err_msg or "400" in err_msg:
+                        logger.warning(f"Ollama model '{model}' does not support embeddings. Trying next available.")
+                        tried_models.append(model)
+                        continue
+                        
                     if not self._is_model_not_found_error(e):
                         logger.error(f"Ollama embedding error with {model}: {e}")
                         raise LLMError(f"Failed to generate embeddings: {e}") from e
@@ -186,10 +223,16 @@ class LocalEngine(LLMEngine):
         except Exception as e:
             logger.error(f"Failed to list models for last resort embeddings: {e}")
 
-        missing = tried_models or [self._primary_model]
+        # Final failure
+        if not tried_models:
+             raise LLMError(
+                "No embedding models found in Ollama. "
+                "Please run 'ollama pull nomic-embed-text' for optimized embeddings."
+            )
+
         raise LLMError(
-            f"Model '{missing[-1]}' not found. "
-            f"Please run 'ollama pull {missing[-1]}' to install it."
+            f"Configured models ('{self._primary_model}', '{self._fallback_model}') were not found for embeddings, "
+            "and no other compatible embedding models were available."
         )
 
     async def embed_batch(self, texts: List[str]) -> List[List[float]]:

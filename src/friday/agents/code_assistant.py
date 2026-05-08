@@ -120,15 +120,31 @@ Respond ONLY with the code wrapped in ```python blocks."""
         res = await self.llm.chat(messages)
         
         # Robust code extraction
-        code_match = re.search(r"```(?:python)?\s*(.*?)\s*```", res.content, re.DOTALL | re.IGNORECASE)
-        if code_match:
-            state["code"] = code_match.group(1).strip()
-        else:
-            # Fallback: if no code block, try to find lines that look like code or just take the whole thing
-            # but strip common conversational filler if it's very short
-            state["code"] = res.content.strip()
+        state["code"] = self._extract_code(res.content)
             
         return state
+
+    def _extract_code(self, content: str) -> str:
+        """
+        Robustly extracts Python code from LLM response.
+        Handles multiple blocks and missing closing backticks.
+        """
+        # 1. Find all blocks with triple backticks
+        # This pattern handles both closed blocks and blocks that go to the end of string
+        blocks = re.findall(r"```(?:python)?\s*(.*?)(?:```|$)", content, re.DOTALL | re.IGNORECASE)
+        
+        if not blocks:
+            # Fallback: if no backticks, just return the whole thing stripped
+            return content.strip()
+            
+        # 2. If multiple blocks, pick the longest one (heuristic for the main script)
+        # or join them if they look like parts of the same script.
+        # For now, picking the longest is safer than joining potentially unrelated snippets.
+        blocks = [b.strip() for b in blocks if b.strip()]
+        if not blocks:
+            return content.strip()
+            
+        return max(blocks, key=len)
 
     async def _debug(self, state: CodeState) -> CodeState:
         state["error"] = f"Execution failed with output:\n{state['output']}"

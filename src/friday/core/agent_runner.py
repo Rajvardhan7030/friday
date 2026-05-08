@@ -6,7 +6,7 @@ import asyncio
 import json
 import uuid
 from importlib import import_module
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Set
 from pathlib import Path
 
 from .registry import registry
@@ -45,6 +45,14 @@ class Session:
         self.history_summary = ""
         self.session_id = uuid.uuid4().hex[:8]
         self._summarize_lock = asyncio.Lock()
+        self._pending_tasks: Set[asyncio.Task] = set()
+
+    async def aclose(self) -> None:
+        """Wait for all pending summarization tasks to complete."""
+        if self._pending_tasks:
+            logger.info(f"Waiting for {len(self._pending_tasks)} pending summarization tasks...")
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+            self._pending_tasks.clear()
 
     def add_message(self, role: str, content: Optional[str] = None, llm: Optional['LocalEngine'] = None, **kwargs):
         """Add a message to the session history."""
@@ -56,8 +64,10 @@ class Session:
             archived_messages = self.history[:overflow]
             self.history = self.history[overflow:]
             if llm:
-                # Trigger semantic summarization in background
-                asyncio.create_task(self._summarize_messages(archived_messages, llm))
+                # Trigger semantic summarization in background and track it
+                task = asyncio.create_task(self._summarize_messages(archived_messages, llm))
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
             else:
                 self._append_to_summary(archived_messages)
 
@@ -169,10 +179,14 @@ class AgentRunner:
 
         try:
             engine_type = config.get("llm.engine", "ollama")
-            if engine_type == "openai":
+            api_key = config.get("llm.api_key")
+            provider = config.get("llm.provider", "ollama")
+            
+            # Use API engine if explicitly requested, or if an API key is present with a non-Ollama provider
+            if engine_type == "openai" or (api_key and provider != "ollama"):
                 self.llm = create_api_engine(
                     model_name=config.get("llm.primary_model"),
-                    api_key=config.get("llm.api_key"),
+                    api_key=api_key,
                     base_url=config.get("llm.api_base_url", "https://api.openai.com/v1"),
                     embedding_model_name=config.get("llm.embedding_model")
                 )
@@ -277,6 +291,9 @@ class AgentRunner:
 
     async def aclose(self):
         """Shutdown engines and close connections."""
+        # Ensure all pending session tasks (like summarization) complete
+        await self.session.aclose()
+
         if self.memory_consolidator and self.session.session_id:
             logger.info(f"Consolidating memory for session {self.session.session_id} before shutdown...")
             try:
@@ -349,7 +366,11 @@ class AgentRunner:
                 await self.vector_store.initialize()
                 if self.conversation_memory:
                     await self.conversation_memory.initialize()
-                await self._auto_index_memory_directories()
+                
+                # Background indexing: don't wait for it to complete before continuing
+                # This prevents 'friday ask' from hanging while large directories are indexed.
+                asyncio.create_task(self._auto_index_memory_directories())
+                
                 self._memory_ready = True
             except Exception as e:
                 self._memory_disabled_reason = str(e)

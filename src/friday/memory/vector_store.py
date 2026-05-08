@@ -113,11 +113,12 @@ class VectorStore:
     ) -> List[Dict[str, Any]]:
         """Search for similar documents."""
         target_collection = self.collection
+        name = collection_name or self.default_collection
         if collection_name:
             target_collection = await self.get_collection(collection_name)
 
         if target_collection is None:
-            await self.initialize()
+            await self.initialize(name)
             target_collection = self.collection
 
         try:
@@ -142,5 +143,31 @@ class VectorStore:
                     })
             return formatted_results
         except Exception as e:
-            logger.error(f"Similarity search failed: {e}")
+            err_msg = str(e)
+            if "dimension" in err_msg.lower() and ("expected" in err_msg.lower() or "expecting" in err_msg.lower()):
+                logger.warning(f"Embedding dimension mismatch in collection '{name}'. This usually happens when the embedding model is changed. Resetting collection to maintain compatibility.")
+                await self.reset_collection(name)
+            else:
+                logger.error(f"Similarity search failed: {e}")
             return []
+
+    async def reset_collection(self, collection_name: str) -> None:
+        """Delete and recreate a collection."""
+        async with self._lock:
+            if self.client:
+                try:
+                    self.client.delete_collection(collection_name)
+                    if collection_name in self._collections:
+                        del self._collections[collection_name]
+                    
+                    # Re-create
+                    self._collections[collection_name] = self.client.create_collection(
+                        name=collection_name,
+                        metadata={"hnsw:space": "cosine"}
+                    )
+                    if not self.default_collection or collection_name == self.default_collection:
+                        self.collection = self._collections[collection_name]
+                    
+                    logger.info(f"Collection '{collection_name}' has been reset.")
+                except Exception as e:
+                    logger.error(f"Failed to reset collection '{collection_name}': {e}")

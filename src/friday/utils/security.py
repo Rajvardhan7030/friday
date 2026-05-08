@@ -6,9 +6,9 @@ import logging
 import sys
 import shutil
 import ast
-import shlex
 import asyncio
 import re
+import signal
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 
@@ -163,33 +163,36 @@ async def run_shell_command(
     timeout: int = 30
 ) -> Tuple[int, str, str]:
     """
-    Executes a shell command safely using asyncio.create_subprocess_exec.
+    Executes a shell command safely. 
+    Uses create_subprocess_shell to support pipes and redirections.
     
     Returns:
         Tuple[int, str, str]: (exit_code, stdout, stderr)
     """
     try:
-        # We use create_subprocess_shell if we want to support pipes/redirection,
-        # but the requirement asked for create_subprocess_exec.
-        # shlex.split helps safely tokenize the command.
-        args = shlex.split(command)
-        if not args:
+        if not command.strip():
             return -1, "", "Empty command"
 
-        # Expand ~ and environment variables in arguments
-        args = [os.path.expanduser(os.path.expandvars(arg)) for arg in args]
+        # Use start_new_session=True on POSIX to enable reliable process group killing
+        kwargs = {
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+            "cwd": str(cwd) if cwd else None
+        }
+        if os.name == "posix":
+            kwargs["start_new_session"] = True
 
-        process = await asyncio.create_subprocess_exec(
-            args[0], *args[1:],
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(cwd) if cwd else None
+        # We use create_subprocess_shell to support shell features like pipes and redirects.
+        # Security is handled by validate_shell_command() which MUST be called before this.
+        process = await asyncio.create_subprocess_shell(
+            command,
+            **kwargs
         )
 
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
             return process.returncode, stdout.decode(errors='replace'), stderr.decode(errors='replace')
-        except asyncio.TimeoutExpired:
+        except TimeoutError:
             _kill_process_tree(process.pid)
             return -1, "", f"Command timed out after {timeout} seconds."
             
@@ -299,7 +302,7 @@ async def run_sandboxed_code(
                 
             return success, output
             
-        except asyncio.TimeoutExpired:
+        except TimeoutError:
             _kill_process_tree(process.pid)
             return False, f"Error: Code execution timed out after {timeout} seconds."
 
@@ -349,9 +352,17 @@ def _kill_process_tree(pid: int) -> None:
     if not psutil:
         # Fallback if psutil not available
         try:
-            os.kill(pid, 9)
-        except:
-            pass
+            if os.name == "posix":
+                # On POSIX, kill the entire process group
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            else:
+                os.kill(pid, signal.SIGKILL)
+        except Exception:
+            # Fallback to single process kill if pgid fails
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
         return
 
     try:

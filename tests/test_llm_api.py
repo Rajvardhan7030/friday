@@ -34,5 +34,5 @@ async def test_gemini_embed_uses_string_input_payload():
     assert result == [1.0, 2.0]
     engine._request.assert_awaited_once_with(
         "embeddings",
-        {"model": "gemini-embedding-001", "input": "how to make omlette"},
+        {"model": "gemini-embedding-001", "input": ["how to make omlette"]},
     )

@@ -77,7 +77,9 @@ class STTEngine:
         if not pyaudio:
             return []
         
-        p = pyaudio.PyAudio()
+        with ignore_stderr():
+            p = pyaudio.PyAudio()
+            
         info = []
         try:
             for i in range(p.get_device_count()):

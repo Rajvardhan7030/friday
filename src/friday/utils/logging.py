@@ -14,20 +14,43 @@ import contextlib
 
 @contextlib.contextmanager
 def ignore_stderr():
-    """Context manager to silence stderr (for noisy C libraries like PortAudio)."""
+    """Context manager to silence C-level stderr (e.g., from noisy libraries like PortAudio).
+    
+    It redirects file descriptor 2 (stderr) to /dev/null for the duration of the context.
+    Python's sys.stderr is flushed first to ensure no Python-level logs are lost.
+    """
+    if os.name != "posix":
+        # Non-POSIX systems might not support dup2 or /dev/null
+        yield
+        return
+
     try:
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        old_stderr = os.dup(2)
+        # 1. Flush Python-level stderr to avoid losing buffered logs
         sys.stderr.flush()
-        os.dup2(devnull, 2)
-        os.close(devnull)
+        
+        # 2. Save original stderr file descriptor
+        old_stderr_fd = os.dup(sys.stderr.fileno())
+        
+        # 3. Open /dev/null
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        
         try:
+            # 4. Redirect stderr (FD 2) to /dev/null
+            os.dup2(devnull_fd, sys.stderr.fileno())
+            
             yield
         finally:
-            os.dup2(old_stderr, 2)
-            os.close(old_stderr)
-    except OSError:
-        # Fallback if dup/dup2 not available
+            # 5. Restore original stderr
+            sys.stderr.flush()
+            os.dup2(old_stderr_fd, sys.stderr.fileno())
+            
+            # 6. Cleanup
+            os.close(old_stderr_fd)
+            os.close(devnull_fd)
+            
+    except (OSError, AttributeError) as e:
+        # If any system call fails, just yield and hope for the best
+        logger.debug(f"Failed to redirect stderr: {e}")
         yield
 
 

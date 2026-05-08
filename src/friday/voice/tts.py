@@ -83,11 +83,15 @@ class TTSEngine:
                 stderr=asyncio.subprocess.PIPE
             )
 
+            # Calculate dynamic timeout: min 30s, plus 1s per 20 characters
+            # This handles long responses on slower CPUs.
+            synthesis_timeout = max(30.0, len(text) / 20.0)
+
             try:
                 # Write text to stdin and close it
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(input=text.encode('utf-8')),
-                    timeout=15.0
+                    timeout=synthesis_timeout
                 )
                 
                 if process.returncode != 0:
@@ -96,8 +100,14 @@ class TTSEngine:
                     return
 
             except asyncio.TimeoutError:
-                process.kill()
-                logger.error("Piper synthesis timed out.")
+                try:
+                    process.kill()
+                    await process.wait()
+                except Exception:
+                    pass
+                logger.error(f"Piper synthesis timed out after {synthesis_timeout:.1f}s (text length: {len(text)})")
+                # Fallback: print text if voice fails
+                print(f"\n{text}\n")
                 return
 
             if output_file.exists():

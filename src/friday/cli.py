@@ -9,15 +9,10 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 
-from friday_model_scout.compatibility_engine import get_compatible_models
-
 # Model Scout Imports
-from friday_model_scout.model_database import get_models
-
 from .core.agent_runner import AgentRunner
 from .core.config import Config
 from .core.exceptions import ModelNotFoundError
-from .core.hardware import get_hardware_profile, get_recommended_model
 from .utils.logging import ignore_stderr, setup_logging
 from .voice.stt import STTEngine
 from .voice.tts import TTSEngine
@@ -36,9 +31,8 @@ class FridayCLI:
         setup_logging(Path(self.config.get("logging.file")))
         
         self.runner = AgentRunner(self.config)
-        with ignore_stderr():
-            self.tts = TTSEngine(self.config)
-            self.stt = STTEngine(self.config)
+        self.tts = TTSEngine(self.config)
+        self.stt = STTEngine(self.config)
         self.voice_mode = False
         self.voice_output_enabled = voice_output_enabled
 
@@ -113,7 +107,7 @@ class FridayCLI:
                 logger.error(f"Loop error: {e}", exc_info=True)
                 console.print(f"[bold red]System Error:[/bold red] {str(e)}")
 
-    async def speak(self, text: str):
+    async def speak(self, text: str, block: bool = False):
         """Handle both console and optional voice output."""
         if not self.voice_output_enabled:
             return
@@ -128,7 +122,7 @@ class FridayCLI:
             clean_text = re.sub(r"\[.*?\]", "", text)
         
         try:
-            await self.tts.speak(clean_text, block=False)
+            await self.tts.speak(clean_text, block=block)
         except Exception:
             # Silent failure since text is already on screen
             pass
@@ -148,7 +142,7 @@ def extract_voice_output_flag(args: list[str]) -> tuple[bool, list[str]]:
     return voice_output_enabled, remaining_args
 
 
-async def voice_download():
+async def voice_download() -> bool:
     """Download and extract voice models based on configuration."""
     import zipfile
 
@@ -158,27 +152,33 @@ async def voice_download():
     selected_tts_model = config.get("voice.tts.model")
     tts_urls = config.get("voice.urls.tts", {})
     stt_url = config.get("voice.urls.stt")
+    tts_hashes = config.get("voice.hashes.tts", {})
+    stt_hash = config.get("voice.hashes.stt")
     
     url = tts_urls.get(selected_tts_model, "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/jenny_dioco/medium/en_GB-jenny_dioco-medium.onnx")
     
     models = {
         f"TTS ({selected_tts_model})": (
             url,
-            Path(config.get("voice.tts.model_path"))
+            Path(config.get("voice.tts.model_path")),
+            tts_hashes.get(selected_tts_model)
         ),
         "TTS Config": (
             url + ".json",
-            Path(config.get("voice.tts.model_path")).with_suffix(".onnx.json")
+            Path(config.get("voice.tts.model_path")).with_suffix(".onnx.json"),
+            None
         ),
         "STT (Vosk)": (
             stt_url,
-            Path(config.get("voice.stt.model_path")).with_suffix(".zip")
+            Path(config.get("voice.stt.model_path")).with_suffix(".zip"),
+            stt_hash
         )
     }
 
+    success = True
     try:
         console.print("[bold blue]Starting model downloads...[/bold blue]")
-        for name, (url, dest) in models.items():
+        for name, (url, dest, expected_hash) in models.items():
             try:
                 # If model already exists, check if valid, otherwise skip
                 if name.startswith("TTS"):
@@ -187,7 +187,7 @@ async def voice_download():
                         continue
 
                 console.print(f"Fetching [cyan]{name}[/cyan]...")
-                download_model(url, dest)
+                download_model(url, dest, expected_hash=expected_hash)
                 
                 # Auto-extract STT
                 if name == "STT (Vosk)":
@@ -198,12 +198,16 @@ async def voice_download():
                     
             except Exception as e:
                 console.print(f"[bold red]Failed to download {name}:[/bold red] {str(e)}")
+                success = False
 
-        console.print("[bold green]Download and setup complete.[/bold green]")
+        if success:
+            console.print("[bold green]Download and setup complete.[/bold green]")
+        return success
     except KeyboardInterrupt:
         console.print("\n[yellow]Download interrupted by user.[/yellow]")
+        return False
 
-async def ollama_pull(model_name: str):
+async def ollama_pull(model_name: str) -> bool:
     """Pull an Ollama model with progress feedback."""
     try:
         import ollama
@@ -217,11 +221,14 @@ async def ollama_pull(model_name: str):
                         status.update(f"[[bold cyan]Ollama[/bold cyan]] {part['status']}...")
             
             console.print(f"[bold green]Successfully pulled {model_name}[/bold green]")
+            return True
         except Exception as e:
             console.print(f"[bold red]Failed to pull {model_name}:[/bold red] {e}")
             console.print(f"[dim]Try running 'ollama pull {model_name}' manually.[/dim]")
+            return False
     except ImportError:
         console.print("[bold red]Ollama library not installed.[/bold red]")
+        return False
 
 async def friday_config(args: list[str]):
     """Manage Friday configuration."""
@@ -258,134 +265,79 @@ async def friday_config(args: list[str]):
 
 async def friday_init():
     """Interactive initialization and hardware auto-tuning."""
-    from rich.prompt import Confirm
+    from .tui.onboarding import OnboardingApp
     
-    console.print(Panel(
-        "[bold blue]FRIDAY System Initialization[/bold blue]\n"
-        "[dim]Setting up your personal AI assistant.[/dim]",
-        expand=False
-    ))
-
-    config = Config()
-
-    # 1. Choose LLM Backend
-    from .tui.api_selector import APISelectorApp
-    app = APISelectorApp()
+    app = OnboardingApp()
     results = await app.run_async()
     
     if not results:
         console.print("[yellow]Initialization cancelled.[/yellow]")
         return
 
-    # Apply results to config
-    config.set("llm.engine", results["engine"], save=False)
-    config.set("llm.provider", results.get("provider", "other"), save=False)
-    config.set("llm.api_key", results.get("api_key", ""), save=False)
-    config.set("llm.primary_model", results["model_name"], save=False)
-    config.set("llm.embedding_model", results.get("embedding_model", DEFAULT_EMBED_MODEL), save=False)
+    config = Config()
     
-    if results["engine"] == "ollama":
+    # 1. User Identity
+    config.set("user.name", results["user_name"], save=False)
+    
+    # 2. LLM Backend
+    engine = results["engine"]
+    if engine == "ollama":
+        config.set("llm.engine", "ollama", save=False)
+        config.set("llm.provider", "ollama", save=False)
+        config.set("llm.primary_model", results["model"], save=False)
         config.set("llm.base_url", results["base_url"], save=False)
     else:
+        # API Engine (openai, gemini, etc.)
+        config.set("llm.engine", "openai", save=False) # Internal engine type for API
+        config.set("llm.provider", results["provider"], save=False)
+        config.set("llm.api_key", results["api_key"], save=False)
+        config.set("llm.primary_model", results["model"], save=False)
         config.set("llm.api_base_url", results["base_url"], save=False)
-
-    pulled_primary = False
-    if results["engine"] == "ollama":
-        # 2. Hardware Detection
-        with console.status("[bold green]Probing hardware...[/bold green]"):
-            profile = await get_hardware_profile()
-        
-        console.print(f"• OS: [cyan]{profile.os}[/cyan] | Arch: [cyan]{profile.cpu_arch}[/cyan]")
-        console.print(f"• RAM: [cyan]{profile.ram_gb:.1f} GB[/cyan]")
-        if profile.gpu_name:
-            console.print(f"• GPU: [cyan]{profile.gpu_name}[/cyan] ([green]{profile.gpu_vram_gb:.1f} GB VRAM[/green])")
-        else:
-            console.print("• GPU: [yellow]None detected[/yellow] (Using CPU)")
-
-        # 3. Hardware Auto-tuning
-        suggested_model = get_recommended_model(profile)
-
-        # 4. Model Recommendations using Model Scout
-        models = get_models()
-        scout_results = get_compatible_models(models, profile.to_detailed())
-        
-        # Sort by score descending
-        scout_results.sort(key=lambda x: x["compat"]["score"], reverse=True)
-        
-        # Filter for Ollama models
-        ollama_results = [m for m in scout_results if m.get("ollama_name")]
-        
-        if not ollama_results:
-            recs = {"primary": suggested_model, "fallback": "gemma2:2b", "embedding": DEFAULT_EMBED_MODEL}
-        else:
-            best = ollama_results[0]
-            # Fallback is a smaller model
-            fallback = next((m for m in ollama_results if "small" in m["tags"]), best)
-            
-            recs = {
-                "primary": best["ollama_name"],
-                "fallback": fallback["ollama_name"],
-                "embedding": DEFAULT_EMBED_MODEL
-            }
-            
-            console.print(f"\n[bold blue]Hardware Auto-tune Suggestion:[/bold blue] [green]{suggested_model}[/green]")
-            console.print(f"[bold]Model Scout Recommendation (Fit: {best['compat']['fit']}):[/bold]")
-            console.print(f"  - Primary (Chat): [green]{recs['primary']}[/green] (Score: {best['compat']['score']})")
-            console.print(f"  - Fallback:       [green]{recs['fallback']}[/green]")
-            console.print(f"  - Embedding:      [green]{recs['embedding']}[/green]")
-
-        selection = Prompt.ask(
-            "\nSelect model configuration",
-            choices=["auto-tune", "model-scout", "manual"],
-            default="auto-tune"
-        )
-
-        if selection == "auto-tune":
-            config.set("llm.primary_model", suggested_model, save=False)
-            await ollama_pull(suggested_model)
-            pulled_primary = True
-        elif selection == "model-scout":
-            config.set("llm.primary_model", recs['primary'], save=False)
-            config.set("llm.fallback_model", recs['fallback'], save=False)
-            config.set("llm.embedding_model", recs['embedding'], save=False)
-        else:
-            console.print("[dim]Manual configuration selected. Models will remain as chosen in Step 1.[/dim]")
-    else:
-        console.print(f"[green]{results.get('provider', 'API').capitalize()} Backend configured.[/green]")
-
-    # 4. Voice Selection
-    voice_choice = Prompt.ask(
-        "\nSelect Voice Model",
-        choices=["female", "male"],
-        default="female"
-    )
     
-    if voice_choice == "male":
-        config.set("voice.tts.model", "en_GB-alan-medium", save=False)
-        config.set("voice.tts.model_path", str(config.base_dir / "models" / "en_GB-alan-medium.onnx"), save=False)
-    else:
-        config.set("voice.tts.model", "en_GB-jenny_dioco-medium", save=False)
-        config.set("voice.tts.model_path", str(config.base_dir / "models" / "en_GB-jenny_dioco-medium.onnx"), save=False)
-
-    # 5. Persistence
+    config.set("llm.embedding_model", results.get("embedding_model", DEFAULT_EMBED_MODEL), save=False)
+    
+    # 3. Voice Output
+    config.set("voice.output_enabled", results["voice_enabled"], save=False)
+    
+    # 4. Persistence
     config.save()
     console.print("\n[bold green]Configuration saved successfully![/bold green]")
 
-    # 6. Optional Download
-    if config.get("llm.engine") == "ollama":
-        if Confirm.ask("\nWould you like to download the required voice models now?"):
-            await voice_download()
+    # 5. Asset Setup with Retry/Rollback
+    from rich.prompt import Confirm
+    
+    while True:
+        setup_success = True
+        
+        if engine == "ollama":
+            if not await ollama_pull(results["model"]):
+                setup_success = False
+        
+        if results["voice_enabled"]:
+            if not await voice_download():
+                setup_success = False
+                
+        if setup_success:
+            break
             
-        if not pulled_primary and Confirm.ask(f"\nWould you like to pull the primary LLM ([cyan]{config.get('llm.primary_model')}[/cyan]) now?"):
-            await ollama_pull(config.get("llm.primary_model"))
-            
-        if Confirm.ask(f"\nWould you like to pull the embedding model ([cyan]{config.get('llm.embedding_model')}[/cyan]) now?"):
-            await ollama_pull(config.get("llm.embedding_model"))
-    else:
-        if Confirm.ask("\nWould you like to download the required voice models now?"):
-            await voice_download()
+        console.print("\n[bold red]Critical asset setup failed.[/bold red]")
+        if Confirm.ask("Would you like to retry the setup?"):
+            continue
+        
+        if Confirm.ask("Abort initialization and rollback configuration?"):
+            if config.config_path.exists():
+                config.config_path.unlink()
+                console.print("[yellow]Configuration rolled back (deleted).[/yellow]")
+            return
+        else:
+            console.print("[yellow]Continuing with incomplete configuration. Some features may not work.[/yellow]")
+            break
 
-    console.print(Panel("[bold green]FRIDAY IS READY[/bold green]\nType [cyan]friday[/cyan] to begin.", expand=False))
+    console.print(Panel(
+        f"[bold green]FRIDAY IS READY[/bold green]\n"
+        f"Welcome, [cyan]{results['user_name']}[/cyan]! Type [cyan]friday[/cyan] to begin.",
+        expand=False
+    ))
 
 
 async def friday_status():
@@ -511,7 +463,7 @@ async def ask_mode(args: list[str], voice_output_enabled: bool = False):
 
     response = await cli.runner.handle_input(prompt)
     console.print(f"\n[bold green]Friday:[/bold green] {response}\n")
-    await cli.speak(response)
+    await cli.speak(response, block=True)
 
 def app():
     """Entry point for the friday CLI as defined in pyproject.toml."""

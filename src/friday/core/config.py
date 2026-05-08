@@ -105,6 +105,13 @@ class Config:
                         "en_GB-alan-medium": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx"
                     },
                     "stt": "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+                },
+                "hashes": {
+                    "tts": {
+                        "en_GB-jenny_dioco-medium": "", # SHA256 hashes go here
+                        "en_GB-alan-medium": ""
+                    },
+                    "stt": ""
                 }
             },
             "security": {
@@ -282,27 +289,51 @@ class Config:
         return self._data
 
 
-def download_model(url: str, dest: Union[str, Path]) -> None:
-    """Download a file with progress bar."""
+def download_model(url: str, dest: Union[str, Path], expected_hash: Optional[str] = None) -> None:
+    """Download a file with progress bar and optional hash verification."""
     import requests
+    import hashlib
     from tqdm import tqdm
 
     dest_path = Path(dest)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Use a temporary file for downloading
+    temp_dest = dest_path.with_suffix(dest_path.suffix + ".tmp")
+
     logger.info(f"Downloading model from {url} to {dest_path}")
     
-    response = requests.get(url, stream=True, timeout=30)
-    response.raise_for_status()
-    total_size = int(response.headers.get('content-length', 0))
+    sha256 = hashlib.sha256() if expected_hash else None
     
-    with open(dest_path, "wb") as f, tqdm(
-        desc=dest_path.name,
-        total=total_size,
-        unit='iB',
-        unit_scale=True,
-        unit_divisor=1024,
-    ) as bar:
-        for data in response.iter_content(chunk_size=1024):
-            size = f.write(data)
-            bar.update(size)
+    try:
+        response = requests.get(url, stream=True, timeout=30)
+        response.raise_for_status()
+        total_size = int(response.headers.get('content-length', 0))
+        
+        with open(temp_dest, "wb") as f, tqdm(
+            desc=dest_path.name,
+            total=total_size,
+            unit='iB',
+            unit_scale=True,
+            unit_divisor=1024,
+        ) as bar:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    if sha256:
+                        sha256.update(chunk)
+                    bar.update(len(chunk))
+        
+        if expected_hash:
+            actual_hash = sha256.hexdigest()
+            if actual_hash != expected_hash:
+                raise ValueError(f"Hash verification failed for {url}. Expected {expected_hash}, got {actual_hash}")
+        
+        # Atomic rename
+        temp_dest.replace(dest_path)
+        logger.info(f"Successfully downloaded and verified {dest_path.name}")
+
+    except Exception as e:
+        if temp_dest.exists():
+            temp_dest.unlink()
+        raise e

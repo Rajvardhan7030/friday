@@ -14,7 +14,7 @@ class Message(BaseModel):
 class LLMResponse(BaseModel):
     content: str
     raw_response: Any = None
-    usage: Dict[str, int] = Field(default_factory=dict)
+    usage: Dict[str, Any] = Field(default_factory=dict)
     tool_calls: Optional[List[Dict[str, Any]]] = None
 
 class LLMEngine(ABC):

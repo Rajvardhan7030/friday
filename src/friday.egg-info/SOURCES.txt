@@ -11,14 +11,11 @@ src/friday.egg-info/requires.txt
 src/friday.egg-info/top_level.txt
 src/friday/agents/__init__.py
 src/friday/agents/adaptive_rag.py
-src/friday/agents/autogen_team.py
 src/friday/agents/base.py
 src/friday/agents/code_assistant.py
-src/friday/agents/human_proxy.py
-src/friday/agents/md_validator.py
-src/friday/agents/meeting_prep.py
 src/friday/agents/router.py
 src/friday/agents/sandbox_executor.py
+src/friday/agents/system_command_agent.py
 src/friday/agents/system_commands.py
 src/friday/agents/tools.py
 src/friday/core/__init__.py
@@ -34,6 +31,7 @@ src/friday/llm/api.py
 src/friday/llm/engine.py
 src/friday/llm/local.py
 src/friday/memory/__init__.py
+src/friday/memory/consolidator.py
 src/friday/memory/conversation.py
 src/friday/memory/document_indexer.py
 src/friday/memory/vector_store.py
@@ -44,7 +42,10 @@ src/friday/plugins/news/main.py
 src/friday/plugins/research/main.py
 src/friday/skills/__init__.py
 src/friday/skills/base.py
+src/friday/skills/browser_skill.py
 src/friday/skills/web_search_skill.py
+src/friday/tui/api_selector.py
+src/friday/tui/onboarding.py
 src/friday/utils/__init__.py
 src/friday/utils/logging.py
 src/friday/utils/security.py
@@ -59,6 +60,10 @@ src/friday_model_scout/model_database.py
 src/friday_model_scout/tui.py
 tests/test_agents.py
 tests/test_cli.py
+tests/test_gemini_payload.py
+tests/test_llm_api.py
+tests/test_memory_tiering.py
 tests/test_security.py
+tests/test_system_command_agent.py
 tests/test_tts.py
 tests/test_web_search_skill.py

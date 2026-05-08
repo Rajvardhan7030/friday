@@ -1,6 +1,7 @@
 """Document ingestion and indexing with semantic chunking."""
 
 import logging
+import asyncio
 from pathlib import Path
 from typing import List
 import aiofiles
@@ -55,11 +56,18 @@ class DocumentIndexer:
         # For simplicity, we only index common text formats for now
         allowed_extensions = {".txt", ".md", ".py", ".yaml", ".yml", ".json", ".rst", ".adoc"}
         
+        file_count = 0
         for file_path in dir_path.glob(glob_pattern):
             if file_path.suffix.lower() in allowed_extensions:
                 chunks_added = await self.index_file(file_path)
                 total_chunks += chunks_added
                 logger.debug(f"Indexed {file_path}: {chunks_added} chunks added.")
+                
+                file_count += 1
+                # Cooperative yield every 10 files to keep event loop responsive
+                # without the heavy 0.1s penalty per file.
+                if file_count % 10 == 0:
+                    await asyncio.sleep(0)
 
         return total_chunks
 

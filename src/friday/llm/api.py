@@ -1,5 +1,6 @@
 """LLM engine integration for OpenAI-compatible APIs."""
 
+import asyncio
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 from .engine import LLMEngine, Message, LLMResponse
@@ -36,6 +37,11 @@ def _is_retryable_api_error(e: Exception) -> bool:
 class APIEngine(LLMEngine):
     """Remote inference engine using OpenAI-compatible API."""
 
+    # Shared synchronization per provider
+    _provider_semaphores: Dict[str, asyncio.Semaphore] = {}
+    _provider_last_times: Dict[str, float] = {}
+    _semaphore_lock = asyncio.Lock()
+
     def __init__(
         self, 
         model_name: str, 
@@ -52,6 +58,7 @@ class APIEngine(LLMEngine):
         if not self._api_key:
             logger.warning("No API key provided for APIEngine. Remote calls will fail.")
         self._base_url = base_url.rstrip("/") + "/"
+        self._provider = "openai" # Default
         
         headers, params = self._get_auth_config()
 
@@ -61,6 +68,33 @@ class APIEngine(LLMEngine):
             base_url=self._base_url,
             timeout=60.0
         )
+
+    async def _get_semaphore(self) -> asyncio.Semaphore:
+        """Get the shared semaphore for this engine's provider."""
+        async with self._semaphore_lock:
+            if self._provider not in self._provider_semaphores:
+                # Default concurrency: 5 for generic, 1 for tight providers like Gemini free tier
+                limit = 1 if self._provider == "gemini" else 5
+                self._provider_semaphores[self._provider] = asyncio.Semaphore(limit)
+                self._provider_last_times[self._provider] = 0.0
+            return self._provider_semaphores[self._provider]
+
+    async def _apply_rate_limit(self) -> None:
+        """Enforce a minimum interval between requests for certain providers."""
+        if self._provider != "gemini":
+            return
+            
+        # Gemini Free Tier is 15 RPM (1 request every 4 seconds)
+        # We enforce a 5-second interval to be safe and avoid bursts
+        min_interval = 5.0
+        
+        async with self._semaphore_lock:
+            now = asyncio.get_event_loop().time()
+            elapsed = now - self._provider_last_times.get(self._provider, 0.0)
+            if elapsed < min_interval:
+                delay = min_interval - elapsed
+                await asyncio.sleep(delay)
+            self._provider_last_times[self._provider] = asyncio.get_event_loop().time()
 
     def _get_auth_config(self) -> Tuple[Dict[str, str], Dict[str, str]]:
         """Return headers and params for authentication."""
@@ -76,18 +110,23 @@ class APIEngine(LLMEngine):
 
     @retry(
         reraise=True,
-        stop=stop_after_attempt(6),
-        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(10), # Be more patient
+        wait=wait_exponential(multiplier=2, min=5, max=120), # Slower backoff for rate limits
         retry=retry_if_exception(_is_retryable_api_error),
         before_sleep=before_sleep_log(logger, logging.WARNING)
     )
     async def _request(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Internal helper to make requests with retries."""
-        # Ensure url is relative (no leading slash) to join correctly with base_url
-        url = url.lstrip("/")
-        response = await self._client.post(url, json=payload)
-        response.raise_for_status()
-        return response.json()
+        """Internal helper to make requests with retries and rate limiting."""
+        semaphore = await self._get_semaphore()
+        async with semaphore:
+            # Enforce sequential rate limiting
+            await self._apply_rate_limit()
+            
+            # Ensure url is relative (no leading slash) to join correctly with base_url
+            url = url.lstrip("/")
+            response = await self._client.post(url, json=payload)
+            response.raise_for_status()
+            return response.json()
 
     async def chat(
         self, 
@@ -226,35 +265,27 @@ class GeminiEngine(APIEngine):
                 embedding_model_name = "gemini-embedding-001"
 
         super().__init__(model_name, api_key, base_url, embedding_model_name)
+        self._provider = "gemini"
 
     def _get_auth_config(self) -> Tuple[Dict[str, str], Dict[str, str]]:
         return {"Authorization": f"Bearer {self._api_key}"}, {}
 
     async def embed(self, text: str) -> List[float]:
-        """Generate a single Gemini embedding using the documented OpenAI payload."""
-        results = await self._embed_payload(str(text))
+        """Generate a single Gemini embedding."""
+        results = await self.embed_batch([str(text)])
         return results[0]
 
     async def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        """Generate Gemini embeddings in parallel to reduce latency."""
+        """Generate Gemini embeddings using a single batch request to minimize API calls and avoid 429s."""
         if not isinstance(texts, list):
             texts = [texts]
         texts = [str(t) for t in texts if t and str(t).strip()]
         if not texts:
             return []
         
-        # Use asyncio.gather to run requests in parallel
-        import asyncio
-        tasks = [self._embed_payload(text) for text in texts]
-        results = await asyncio.gather(*tasks)
-        
-        # results is a list of lists of embeddings (each _embed_payload returns a list of 1 embedding)
-        return [emb[0] for emb in results]
-
-    async def _embed_payload(self, text: str) -> List[List[float]]:
         payload = {
             "model": self._get_embedding_model(),
-            "input": text,
+            "input": texts,
         }
 
         try:
@@ -263,9 +294,9 @@ class GeminiEngine(APIEngine):
         except httpx.HTTPStatusError as e:
             if e.response.status_code in (401, 403):
                 raise LLMError("Authentication failed (401/403). Please check your API key in config.yaml.") from e
-            raise LLMError(f"Failed to generate API embeddings: {self._format_http_error(e)}")
+            raise LLMError(f"Failed to generate Gemini embeddings: {self._format_http_error(e)}")
         except Exception as e:
-            raise LLMError(f"Failed to generate API embeddings: {e}")
+            raise LLMError(f"Failed to generate Gemini embeddings: {e}")
 
     async def _request(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Override to sanitize unsupported OpenAI parameters for Gemini."""
@@ -323,6 +354,7 @@ class MistralEngine(APIEngine):
         embedding_model_name: Optional[str] = None
     ):
         super().__init__(model_name, api_key, base_url, embedding_model_name)
+        self._provider = "mistral"
 
     def _get_embedding_model(self) -> str:
         if self._embedding_model_name:
@@ -340,6 +372,7 @@ class GroqEngine(APIEngine):
         embedding_model_name: Optional[str] = None
     ):
         super().__init__(model_name, api_key, base_url, embedding_model_name)
+        self._provider = "groq"
 
     def _get_embedding_model(self) -> str:
         # Groq doesn't host embeddings yet, fallback to a sensible default or raise
@@ -358,6 +391,7 @@ class OpenRouterEngine(APIEngine):
         embedding_model_name: Optional[str] = None
     ):
         super().__init__(model_name, api_key, base_url, embedding_model_name)
+        self._provider = "openrouter"
     
     def _get_auth_config(self) -> Tuple[Dict[str, str], Dict[str, str]]:
         headers, params = super()._get_auth_config()
