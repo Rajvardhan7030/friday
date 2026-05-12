@@ -146,7 +146,7 @@ Create a new directory in `src/friday/plugins/` with a `manifest.json`:
 ---
 
 ## 👥 Contributors
-- **Raj** (Lead Developer) - [raj@example.com](mailto:raj@example.com)
+- **Raj** (Lead Developer) - [rajvardhanjadhav7030@gmail.com](mailto:rajvardhanjadhav7030@gmail.com)
 
 ---
 
