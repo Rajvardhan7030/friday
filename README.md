@@ -1,124 +1,154 @@
 # 🎙️ FRIDAY: Your Personal Offline AI Assistant
 
-**FRIDAY** (Female Replacement Intelligent Digital Assistant Youth) is a privacy-first, local AI assistant that lives on your computer. Unlike other assistants (like Siri or Alexa), FRIDAY doesn't send your data to the cloud—everything stays on your machine.
+**A local-first, privacy-centric framework for digital empowerment.**
+
+FRIDAY (Female Replacement Intelligent Digital Assistant Youth) is an open-source framework designed to bring high-performance AI agents directly to your local machine. Unlike cloud-based assistants, FRIDAY ensures your data never leaves your computer while providing a rich, voice-enabled experience.
 
 ---
 
-## ✨ Why choose FRIDAY?
-- **🔒 100% Private**: Your conversations and data never leave your computer.
-- **🗣️ Talk & Listen**: Fully voice-enabled interaction.
-- **🧠 Local Memory**: She remembers your past chats and can "read" your local documents.
-- **⚡ Fast & Free**: No subscriptions, no internet required (after setup).
-- **🛡️ Safe Zone**: Runs scripts and code in a secure "Sandbox" to protect your files.
+## 📖 Table of Contents
+- [Description](#description)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Configuration & Environment](#configuration--environment)
+- [Features](#features)
+- [API Documentation (Extending Friday)](#api-documentation-extending-friday)
+- [Contributors](#contributors)
+- [License](#license)
 
 ---
 
-## 🚀 Getting Started
+## 📝 Description
+FRIDAY is built for those who value privacy without compromising on AI capabilities. It serves as a personal assistant capable of chatting, answering questions, managing your morning routine, and even executing code in a safe environment. By leveraging local LLM engines like **Ollama**, FRIDAY provides a "Safe Zone" for digital interaction.
 
-Follow these steps to bring FRIDAY to life on your computer.
+---
 
-### 1. Simple Prerequisites
-Before installing FRIDAY, you need:
-1.  **Python (3.10 or newer)**: Think of this as the engine that runs FRIDAY. Download it from [python.org](https://www.python.org/downloads/).
-2.  **Ollama**: This is the "brain" that lets FRIDAY think and talk. Download it from [ollama.com](https://ollama.com).
-    - *Tip: Once installed, keep it running in your taskbar.*
-3.  **Docker (Optional)**: For extra safety when you ask FRIDAY to write code, install [Docker](https://www.docker.com/). It keeps her coding in a "sealed box."
+## 🛠️ Prerequisites
+Before bringing FRIDAY to life, ensure your system meets these requirements:
 
-### 2. Installation
-Open your terminal (Command Prompt on Windows, Terminal on Mac/Linux) and run:
+1.  **Python (3.10 or newer)**: The core engine. Download from [python.org](https://www.python.org/downloads/).
+2.  **Ollama**: The "brain" for local LLMs. Download from [ollama.com](https://ollama.com).
+3.  **Docker (Optional)**: Highly recommended for the **Code Assistant**. It creates a "sealed box" (sandbox) to run generated code safely.
+4.  **PortAudio (Linux only)**: Required for voice features.
+    ```bash
+    sudo apt-get install portaudio19-dev
+    ```
 
-```bash
-# Get the code
-git clone <repository-url>
-cd friday
+---
 
-# Install FRIDAY
-pip install -e .
-```
+## 🚀 Installation
+1.  **Clone the Repository**:
+    ```bash
+    git clone https://github.com/your-repo/friday.git
+    cd friday
+    ```
 
-### 3. First-Time Setup
-Run the interactive setup assistant. It features a modern **TUI (Terminal User Interface)** to help you configure your AI backend and use our **Model Scout** technology to recommend the best models for your specific machine:
+2.  **Install the Package**:
+    It is recommended to use a virtual environment.
+    ```bash
+    pip install -e .
+    ```
+
+---
+
+## 💬 Usage
+FRIDAY provides several ways to interact with her.
+
+### 1. First-Time Setup
+Run the interactive onboarding TUI to configure your backend and scan your hardware:
 ```bash
 friday init
 ```
-- **Backend Choice**: Select **Local Ollama** for 100% privacy, or high-speed **Cloud APIs** (Gemini, OpenAI, Mistral, Groq, OpenRouter).
-- **Auto-Config**: The TUI pre-fills the best models and URLs for your selected provider.
-- **Hardware Scan**: Review tailored recommendations based on your CPU, RAM, and GPU (NVIDIA or Apple Silicon).
-- **Voice Selection**: Choose a **Male or Female** voice and let FRIDAY pull everything for you.
 
----
+### 2. Interactive Chat Mode
+Enter a full conversational loop:
+```bash
+friday
+```
+- **Voice Mode**: Type `/voice on` to enable the microphone.
+- **Exit**: Type `/exit` or `/quit`.
 
-## 💬 How to Use FRIDAY
-
-### ⌨️ Starting a Conversation
-Type `friday` to start chatting.
-- **Voice Mode**: Type `/voice on` to start talking. Type `/voice off` to go back to typing.
-- **Exit**: Type `/exit` or `/quit` when you're done.
-
-### 🗣️ Talking to FRIDAY (Natural Language)
-FRIDAY isn't just a command-line tool; she's a conversational assistant. In chat mode, you can use natural language for complex tasks:
-- **"Give me my morning digest"**: Gathers your unread emails, calendar events, and top news for a voiced briefing.
-- **"Clear the history"**: Resets the current conversation.
-- **"Who are you?"**: Ask about FRIDAY's identity and local-first mission.
-- **"Write a script to..."**: Triggers the **Code Assistant** to safely generate and run code for you.
-
-### ❓ Quick Questions
-Ask a quick question without entering full chat mode:
+### 3. Quick Questions (One-Shot)
+Ask a single question and exit:
 ```bash
 friday ask "How do I make a perfect omelette?"
 ```
-*Add `-v` to the end (e.g., `friday ask "Hello" -v`) to hear her speak the answer!*
+*Tip: Add `-v` (e.g., `friday ask "Hello" -v`) to hear her speak the answer.*
 
-### 🔍 Model Scout (Hardware Assessment)
-Want to know which local models your computer can handle? Use the interactive Scout TUI:
+### 4. Hardware Assessment (Model Scout)
+Find the best models for your specific CPU, RAM, and GPU:
 ```bash
 friday model-scout
 ```
-- **Sort & Filter**: Find models by tag (coding, reasoning) or suitability.
-- **Performance Estimates**: See estimated tokens/second for your CPU/GPU.
-- **One-Click Setup**: Press `D` to see the pull command for any compatible model.
 
-### 📋 Common Commands & Tasks
-| Command | What it does |
-| :--- | :--- |
-| `friday` | Enters full interactive chat mode. |
-| `friday init` | Launches the interactive TUI setup assistant. |
-| `friday status` | Shows current LLM provider, models, and memory status. |
-| `friday doctor` | Runs a system health check (Hardware, STT, TTS, APIs). |
-| `friday model-scout` | Opens the hardware compatibility assessment tool. |
-| `friday ask "..."` | One-shot question mode (add `-v` for voice). |
-| `friday config list` | View all current configuration settings. |
-| `friday config set <key> <val>` | Modify a specific setting (e.g., `llm.primary_model`). |
+### 5. Health Check
+Run a diagnostic to ensure all systems (STT, TTS, APIs) are working:
+```bash
+friday doctor
+```
 
 ---
 
-## 🛠️ Troubleshooting (Help!)
+## ⚙️ Configuration & Environment
+FRIDAY stores her settings in your home directory: `~/.friday/config.yaml`.
 
-If something isn't working right, don't worry! Here are the most common fixes:
+### Common Commands:
+- **View Config**: `friday config list`
+- **Update Setting**: `friday config set llm.primary_model "llama3:8b"`
 
-### ❓ Connection Error or "Brain Foggy"
-- **Ollama Users**: Make sure **Ollama** is running in your taskbar.
-- **API Users**: Run `friday status` to check your provider. Ensure your API Key is correct in your `config.yaml`.
-- **Network Errors**: If using a cloud provider, check your internet connection.
-
-### ❓ "I can't hear anything" / "She can't hear me"
-- Run `friday voice download` to ensure voice models are present.
-- Run `friday doctor` to verify your microphone is detected and energy levels are correct.
-
-### ❓ Sound errors on Linux
-- **The Fix**: If you see errors about "PyAudio" or "PortAudio," run:
-  ```bash
-  sudo apt-get install portaudio19-dev
-  ```
+### Environment Overrides:
+You can also set environment variables to override config values:
+- `FRIDAY_LLM_PRIMARY_MODEL`
+- `FRIDAY_LLM_API_KEY`
 
 ---
 
-## 🏗️ Technical Highlights
+## ✨ Features
+- **🌍 Multi-Provider LLM**: Support for Ollama, OpenAI, Gemini, Mistral, Groq, and OpenRouter.
+- **🗣️ Full Voice Integration**: High-quality local Text-to-Speech (TTS) and Speech-to-Text (STT).
+- **🧠 Vector Memory**: Remembers past conversations and indexes local documents for context.
+- **🛡️ Secure Sandbox**: Executes Python code and system commands in a Docker-protected environment.
+- **🔍 Model Scout**: Intelligent hardware scanning to recommend the best local models for your machine.
+- **🔌 MCP Support**: Native support for the Model Context Protocol to connect external tools.
 
-- **🌍 Multi-Provider LLM**: Native support for **Ollama, OpenAI, Google Gemini, Mistral, Groq, and OpenRouter**.
-- **🛡️ Robust API Sanitization**: Specialized engines automatically strip prefixes (like `models/`) and sanitize unsupported parameters (like `presence_penalty` or `strict` schemas) before they hit provider endpoints (critical for **Gemini** compatibility).
-- **📱 Apple Silicon Optimized**: Full VRAM detection and Tok/s heuristics for Mac M1/M2/M3 chips.
-- **🚀 Vector Memory**: High-performance local document indexing using batch embeddings.
-- **🔌 MCP Support**: Connect external tools via the **Model Context Protocol**.
+---
 
-For more support, please check the GitHub issues page.
+## 🔌 API Documentation (Extending Friday)
+FRIDAY is designed to be a framework. You can extend her by adding new **Agents** or **Plugins**.
+
+### Creating a Custom Agent
+All agents must inherit from the `BaseAgent` class found in `src/friday/agents/base.py`:
+```python
+from friday.agents.base import BaseAgent, Context, AgentResult
+
+class MyAgent(BaseAgent):
+    async def run(self, ctx: Context) -> AgentResult:
+        # Your logic here
+        return AgentResult(content="Hello from my custom agent!")
+
+    @property
+    def name(self) -> str:
+        return "my_custom_agent"
+```
+
+### Adding a Plugin
+Create a new directory in `src/friday/plugins/` with a `manifest.json`:
+```json
+{
+  "name": "my_plugin",
+  "version": "1.0.0",
+  "description": "A custom plugin for Friday.",
+  "entry_point": "friday.plugins.my_plugin.main"
+}
+```
+
+---
+
+## 👥 Contributors
+- **Raj** (Lead Developer) - [raj@example.com](mailto:raj@example.com)
+
+---
+
+## 📄 License
+This project is licensed under the **MIT License**. See the `LICENSE` file (if available) or `pyproject.toml` for details.
