@@ -45,6 +45,7 @@ src/friday/skills/base.py
 src/friday/skills/browser_skill.py
 src/friday/skills/web_search_skill.py
 src/friday/tui/api_selector.py
+src/friday/tui/narratives.py
 src/friday/tui/onboarding.py
 src/friday/utils/__init__.py
 src/friday/utils/logging.py
