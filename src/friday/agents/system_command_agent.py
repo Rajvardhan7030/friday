@@ -4,6 +4,7 @@ Executes approved Linux/Unix shell commands with safety guardrails and user conf
 """
 
 import logging
+import asyncio
 from pathlib import Path
 from typing import Optional, Union, Dict, Any
 
@@ -82,7 +83,8 @@ If no command is found, respond with 'none'.
         ))
         
         # Confirmation prompt
-        if not Confirm.ask("Do you want to proceed with this command?", default=False):
+        confirmed = await asyncio.to_thread(Confirm.ask, "Do you want to proceed with this command?", default=False)
+        if not confirmed:
             return AgentResult(content="Command execution cancelled by user.")
 
         # 4. Execute command

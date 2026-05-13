@@ -27,6 +27,7 @@ class TTSEngine:
         self.voice_model = config.get("voice.tts.model")
         self.model_path = Path(config.get("voice.tts.model_path"))
         self.piper_path = config.get("voice.tts.piper_path")
+        self._playback_lock = asyncio.Lock()
 
     def _validate_model(self) -> None:
         """Ensure the voice model and its JSON config exist and are valid."""
@@ -112,11 +113,23 @@ class TTSEngine:
 
             if output_file.exists():
                 if block:
-                    await asyncio.to_thread(self._play_audio, output_file)
+                    async with self._playback_lock:
+                        await asyncio.to_thread(self._play_audio, output_file)
                 else:
-                    # Run in background
-                    asyncio.create_task(asyncio.to_thread(self._play_audio, output_file, cleanup=True))
-                    output_file = None # Don't cleanup in finally if playing in background
+                    # Run in background via a helper to ensure lock acquisition and cleanup
+                    async def _play_and_cleanup(path: Path):
+                        try:
+                            async with self._playback_lock:
+                                await asyncio.to_thread(self._play_audio, path)
+                        finally:
+                            if path.exists():
+                                try:
+                                    path.unlink()
+                                except Exception as e:
+                                    logger.warning(f"Failed to cleanup background TTS file {path}: {e}")
+
+                    asyncio.create_task(_play_and_cleanup(output_file))
+                    output_file = None # Ownership transferred to task
 
         except Exception as e:
             logger.error(f"TTS Engine error: {e}")

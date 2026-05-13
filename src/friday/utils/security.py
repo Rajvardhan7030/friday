@@ -104,6 +104,10 @@ def validate_shell_command(command: str, config: Optional[Config] = None) -> Tup
     """
     Checks if a shell command is safe to execute based on blocklists and config.
     """
+    # 0. Check for command substitution (prevents bypasses like 'cat /etc/pass$(echo wd)')
+    if "$(" in command or "`" in command:
+        return False, "Command substitution ($() or ``) is prohibited for security reasons."
+
     # 1. Basic Sudo check
     cmd_lower = command.lower()
     allow_sudo = config.get("security.shell_command_allow_sudo", False) if config else False

@@ -1,48 +1,58 @@
 import pytest
 import asyncio
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock, AsyncMock, patch
 from friday.core.agent_runner import AgentRunner
 from friday.core.config import Config
 from friday.llm.engine import LLMResponse
 
 @pytest.mark.asyncio
 async def test_memory_tiering(tmp_path):
-    # 1. Setup Config
+    # 1. Setup Config with a temporary path to avoid using real config
+    config_path = tmp_path / "config.yaml"
     persist_dir = tmp_path / "memory"
     persist_dir.mkdir()
-    
-    config = Config()
+
+    config = Config(config_path=config_path)
     config.set("memory.enabled", True)
     config.set("memory.persist_directory", str(persist_dir))
-    config.set("llm.engine", "mock")
-    
+    config.set("llm.engine", "ollama") # Set to something that doesn't trigger API engine
+    config.set("llm.api_key", "")
+    config.set("llm.provider", "ollama")
+
     # 2. Mock LLM
     mock_llm = MagicMock()
     mock_llm.is_available.return_value = True
     mock_llm.model_name = "mock-model"
-    
-    # Mock fact extraction
+
+    # Mock responses
+    intent_response = LLMResponse(content="general_chat")
     fact_extraction_response = LLMResponse(content='["User likes pizza", "User is a coder"]')
     # Mock general chat
     chat_response = LLMResponse(content="Hello! I remember you like pizza.")
-    
+
     # Sequence of responses
     mock_llm.chat = AsyncMock(side_effect=[
-        chat_response,           # for handle_input
+        intent_response,         # for _detect_intent in handle_input
+        chat_response,           # for assistant response in handle_input
         fact_extraction_response # for consolidation
     ])
     mock_llm.embed = AsyncMock(return_value=[0.1] * 384)
-    mock_llm.embed_batch = AsyncMock(return_value=[[0.1] * 384] * 2)
+    mock_llm.embed_batch = AsyncMock(side_effect=lambda docs: [[0.1] * 384 for _ in docs])
     mock_llm.aclose = AsyncMock()
-    
-    # 3. Initialize AgentRunner
-    runner = AgentRunner(config)
-    runner.llm = mock_llm # Inject mock
-    
+
+    # 3. Initialize AgentRunner and inject mock BEFORE memory setup if possible, 
+    # but AgentRunner sets up memory in __init__.
+    # So we patch LocalEngine and create_api_engine to return our mock, 
+    # or just accept that we need to overwrite it.
+    with patch("friday.core.agent_runner.LocalEngine", return_value=mock_llm), \
+         patch("friday.core.agent_runner.create_api_engine", return_value=mock_llm):
+        runner = AgentRunner(config)
+        # Verify it uses our mock
+        assert runner.llm == mock_llm
+
     # 4. Simulate conversation
     await runner.handle_input("I really love pizza and I work as a coder.")
-    
     # Check if messages were added to STM (SQLite)
     assert runner.conversation_memory is not None
     history = await runner.conversation_memory.get_history(runner.session.session_id)
@@ -53,12 +63,14 @@ async def test_memory_tiering(tmp_path):
     
     # 6. Verify LTM storage
     # Re-init runner to check retrieval
-    runner2 = AgentRunner(config)
-    runner2.llm = mock_llm
-    
+    with patch("friday.core.agent_runner.LocalEngine", return_value=mock_llm), \
+         patch("friday.core.agent_runner.create_api_engine", return_value=mock_llm):
+        runner2 = AgentRunner(config)
+        # Verify it uses our mock
+        assert runner2.llm == mock_llm
+
     # Mock retrieval search
     mock_llm.embed.return_value = [0.1] * 384
-    
     # Ensure memory is ready
     await runner2._ensure_memory_ready()
     

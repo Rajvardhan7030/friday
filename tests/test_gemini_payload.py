@@ -1,8 +1,12 @@
+import os
 import pytest
 import json
 from unittest.mock import AsyncMock, MagicMock
 from friday.llm.api import GeminiEngine
 from friday.llm.engine import Message
+
+# Use a dummy key for testing, allowing override from environment
+TEST_API_KEY = os.environ.get("TEST_API_KEY", "dummy-key-for-testing")
 
 @pytest.mark.asyncio
 async def test_gemini_payload_compliance():
@@ -18,7 +22,7 @@ async def test_gemini_payload_compliance():
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_response
     
-    engine = GeminiEngine(model_name="gemini-1.5-flash", api_key="test-key")
+    engine = GeminiEngine(model_name="gemini-1.5-flash", api_key=TEST_API_KEY)
     engine._client = mock_client
     
     # Sequence: User -> Assistant (Tool Call) -> Tool Response
@@ -71,7 +75,7 @@ async def test_gemini_unsupported_params_filtering():
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_response
     
-    engine = GeminiEngine(model_name="gemini-1.5-flash", api_key="test-key")
+    engine = GeminiEngine(model_name="gemini-1.5-flash", api_key=TEST_API_KEY)
     engine._client = mock_client
     
     # Payload with unsupported keys
@@ -100,7 +104,7 @@ from friday.core.exceptions import LLMError
 
 @pytest.mark.asyncio
 async def test_gemini_missing_tool_call_id_raises_error():
-    engine = GeminiEngine(model_name="gemini-1.5-flash", api_key="test-key")
+    engine = GeminiEngine(model_name="gemini-1.5-flash", api_key=TEST_API_KEY)
     
     # Message with missing tool_call_id
     messages = [
@@ -150,7 +154,7 @@ async def test_gemini_incoming_multiple_tool_calls():
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_response
     
-    engine = GeminiEngine(model_name="gemini-1.5-flash", api_key="test-key")
+    engine = GeminiEngine(model_name="gemini-1.5-flash", api_key=TEST_API_KEY)
     engine._client = mock_client
     
     messages = [Message(role="user", content="Call two tools")]

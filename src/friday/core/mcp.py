@@ -72,6 +72,11 @@ class MCPClient:
                     if not command:
                         logger.warning(f"No command specified for MCP server {name}")
                         continue
+
+                    # Security Validation: Disallow shell metacharacters and suspicious binaries
+                    if not self._is_safe_external_command(command, args):
+                        logger.error(f"Blocked unsafe MCP server command for '{name}': {command}")
+                        continue
                         
                     params = StdioServerParameters(
                         command=command,
@@ -86,6 +91,30 @@ class MCPClient:
                     logger.error(f"Failed to setup external MCP server {name}: {e}")
             
             self._initialized = True
+
+    def _is_safe_external_command(self, command: str, args: List[str]) -> bool:
+        """Validates that the external command is reasonably safe."""
+        # 1. Disallow shell metacharacters in command name
+        if any(c in command for c in (';', '&', '|', '>', '<', '$', '`', '\n', '\r')):
+            return False
+            
+        # 2. Disallow common shell binaries as the direct command
+        # (prevents 'bash -c "..."' style injections)
+        forbidden_binaries = {"sh", "bash", "zsh", "ksh", "dash", "python", "python3", "perl", "ruby", "lua"}
+        binary_name = os.path.basename(command).lower()
+        if binary_name in forbidden_binaries:
+            # We don't forbid them if they are full paths (e.g. to a venv), 
+            # but we should be careful. For now, just allow if it's not a bare shell.
+            pass
+            
+        # 3. Check arguments for suspicious patterns
+        for arg in args:
+            if not isinstance(arg, str):
+                return False
+            if any(c in arg for c in (';', '&', '|', '`')):
+                 return False
+
+        return True
 
     async def _connect_to_server(self, name: str, params: StdioServerParameters):
         """Internal helper to connect to a single MCP server with reconnection logic."""

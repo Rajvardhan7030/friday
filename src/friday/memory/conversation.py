@@ -1,6 +1,7 @@
 """SQLite-backed conversation history with automatic summarization."""
 
 import logging
+import asyncio
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, event
@@ -24,6 +25,7 @@ class ConversationMemory:
     """Manages chat history and summarization."""
 
     def __init__(self, db_path: str):
+        self._write_lock = asyncio.Lock()
         # Enforce connection pooling and WAL mode for concurrency
         self.engine = create_async_engine(
             f"sqlite+aiosqlite:///{db_path}",
@@ -49,15 +51,16 @@ class ConversationMemory:
 
     async def add_message(self, session_id: str, role: str, content: str, metadata: Optional[Dict] = None) -> None:
         """Add a message to history."""
-        async with self.session_factory() as session:
-            msg = ChatMessage(
-                session_id=session_id,
-                role=role,
-                content=content,
-                metadata_json=metadata
-            )
-            session.add(msg)
-            await session.commit()
+        async with self._write_lock:
+            async with self.session_factory() as session:
+                msg = ChatMessage(
+                    session_id=session_id,
+                    role=role,
+                    content=content,
+                    metadata_json=metadata
+                )
+                session.add(msg)
+                await session.commit()
 
     async def get_history(self, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Retrieve recent chat history."""
@@ -84,7 +87,8 @@ class ConversationMemory:
     async def clear_history(self, session_id: str) -> None:
         """Clear history for a session."""
         from sqlalchemy import delete
-        async with self.session_factory() as session:
-            stmt = delete(ChatMessage).where(ChatMessage.session_id == session_id)
-            await session.execute(stmt)
-            await session.commit()
+        async with self._write_lock:
+            async with self.session_factory() as session:
+                stmt = delete(ChatMessage).where(ChatMessage.session_id == session_id)
+                await session.execute(stmt)
+                await session.commit()

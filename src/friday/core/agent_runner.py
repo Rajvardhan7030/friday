@@ -154,6 +154,52 @@ class Session:
         combined_summary = "\n".join(line for line in summary_lines if line)
         self.history_summary = combined_summary[-self.summary_max_chars:]
 
+class ToolExecutor:
+    """Handles the execution of multiple tool calls from an LLM."""
+
+    def __init__(self, mcp_client: Any):
+        self.mcp_client = mcp_client
+
+    async def execute_tool_calls(self, tool_calls: List[Dict[str, Any]]) -> List[Message]:
+        """Execute a batch of tool calls and return a list of tool result messages."""
+        results = []
+        for tool_call in tool_calls:
+            func_name = tool_call.get("function", {}).get("name")
+            func_args_str = tool_call.get("function", {}).get("arguments", "{}")
+            tool_call_id = tool_call.get("id")
+            
+            try:
+                # Ollama sometimes returns string args, sometimes dict
+                if isinstance(func_args_str, str):
+                    args = json.loads(func_args_str)
+                else:
+                    args = func_args_str
+                
+                logger.info(f"LLM executing tool: {func_name} with args {args}")
+                tool_result = await self.mcp_client.call_tool(func_name, args)
+                
+                # Ensure tool result is a string
+                if isinstance(tool_result, (dict, list)):
+                    tool_result_str = json.dumps(tool_result)
+                else:
+                    tool_result_str = str(tool_result)
+                    
+                results.append(Message(
+                    role="tool", 
+                    content=tool_result_str, 
+                    tool_call_id=tool_call_id,
+                    name=func_name
+                ))
+            except Exception as e:
+                logger.error(f"Tool execution failed: {e}")
+                results.append(Message(
+                    role="tool", 
+                    content=f"Error executing tool: {str(e)}",
+                    tool_call_id=tool_call_id,
+                    name=func_name
+                ))
+        return results
+
 class AgentRunner:
     """The 'Brain' that decides how to handle an input."""
     
@@ -530,7 +576,6 @@ class AgentRunner:
     async def _fallback_to_llm(self, text: str) -> str:
         """Use the local LLM when no specific command is triggered, with MCP tool support."""
         from .mcp import mcp_client
-        import json
         
         # Ensure MCP servers are started
         await self._ensure_mcp_ready()
@@ -549,74 +594,41 @@ class AgentRunner:
             insert_at = 1 if messages and messages[0].role == "system" else 0
             messages.insert(insert_at, memory_message)
         
-        tools = mcp_client.get_tools_for_llm()
-        if not tools:
-            tools = None
+        tools = mcp_client.get_tools_for_llm() or None
             
         try:
-            # ReAct / Tool Loop
-            max_iterations = 5
-            for _ in range(max_iterations):
-                response = await self.llm.chat(messages, tools=tools)
-                content = response.content
-                tool_calls = response.tool_calls
-                
-                if tool_calls:
-                    # Assistant chose to call tools
-                    assistant_msg = Message(role="assistant", content=content, tool_calls=tool_calls)
-                    messages.append(assistant_msg)
-                    await self._add_to_history(**assistant_msg.model_dump(exclude_none=True))
-                    
-                    for tool_call in tool_calls:
-                        func_name = tool_call.get("function", {}).get("name")
-                        func_args_str = tool_call.get("function", {}).get("arguments", "{}")
-                        tool_call_id = tool_call.get("id")
-                        try:
-                            # Ollama sometimes returns string args, sometimes dict
-                            if isinstance(func_args_str, str):
-                                args = json.loads(func_args_str)
-                            else:
-                                args = func_args_str
-                            
-                            logger.info(f"LLM executing tool: {func_name} with args {args}")
-                            tool_result = await mcp_client.call_tool(func_name, args)
-                            
-                            # Ensure tool result is a string
-                            if isinstance(tool_result, dict) or isinstance(tool_result, list):
-                                tool_result_str = json.dumps(tool_result)
-                            else:
-                                tool_result_str = str(tool_result)
-                                
-                            tool_msg = Message(
-                                role="tool", 
-                                content=tool_result_str, 
-                                tool_call_id=tool_call_id,
-                                name=func_name
-                            )
-                            messages.append(tool_msg)
-                            await self._add_to_history(**tool_msg.model_dump(exclude_none=True))
-                        except Exception as e:
-                            logger.error(f"Tool execution failed: {e}")
-                            error_msg = Message(
-                                role="tool", 
-                                content=f"Error executing tool: {str(e)}",
-                                tool_call_id=tool_call_id,
-                                name=func_name
-                            )
-                            messages.append(error_msg)
-                            await self._add_to_history(**error_msg.model_dump(exclude_none=True))
-                    continue # Loop back to LLM with tool responses
-                else:
-                    # No more tool calls, we have our final answer
-                    await self._add_to_history("assistant", content)
-                    await self._remember_exchange(text, content)
-                    return content
-            
-            # If max iterations reached
-            final_msg = "I've reached my thinking limit on this task."
-            await self._add_to_history("assistant", final_msg)
-            return final_msg
-            
+            return await self._run_react_loop(text, messages, tools)
         except Exception as e:
             logger.error(f"LLM fallback failed: {e}")
             return f"I'm sorry, my brain is feeling a bit foggy: {str(e)}"
+
+    async def _run_react_loop(self, original_text: str, messages: List[Message], tools: Optional[List[Dict[str, Any]]]) -> str:
+        """Executes the iterative tool-calling loop."""
+        from .mcp import mcp_client
+        max_iterations = 5
+        
+        for _ in range(max_iterations):
+            response = await self.llm.chat(messages, tools=tools)
+            
+            if not response.tool_calls:
+                # Final answer
+                await self._add_to_history("assistant", response.content)
+                await self._remember_exchange(original_text, response.content)
+                return response.content
+
+            # Handle tool calls
+            assistant_msg = Message(role="assistant", content=response.content, tool_calls=response.tool_calls)
+            messages.append(assistant_msg)
+            await self._add_to_history(**assistant_msg.model_dump(exclude_none=True))
+            
+            # Execute tools
+            tool_executor = ToolExecutor(mcp_client)
+            tool_results = await tool_executor.execute_tool_calls(response.tool_calls)
+            
+            for tool_msg in tool_results:
+                messages.append(tool_msg)
+                await self._add_to_history(**tool_msg.model_dump(exclude_none=True))
+        
+        final_msg = "I've reached my thinking limit on this task."
+        await self._add_to_history("assistant", final_msg)
+        return final_msg

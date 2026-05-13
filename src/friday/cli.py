@@ -436,7 +436,22 @@ async def friday_doctor():
     stt_status = "[green]EXISTS[/green]" if stt_path.exists() else "[red]MISSING[/red]"
     console.print(f"• STT Model: {stt_status} ({stt_path.name})")
 
-    # 4. Check Audio Devices
+    # 4. Check Browser Daemon
+    try:
+        import httpx
+        daemon_url = config.get("skills.browser.daemon_url", "http://localhost:9000")
+        try:
+            resp = httpx.get(f"{daemon_url}/health", timeout=2.0)
+            if resp.status_code == 200:
+                console.print(f"• Browser Daemon: [green]ONLINE[/green] ({daemon_url})")
+            else:
+                console.print(f"• Browser Daemon: [yellow]ERROR[/yellow] (Status: {resp.status_code})")
+        except Exception:
+            console.print(f"• Browser Daemon: [bold red]OFFLINE[/bold red] (Is friday-browser-daemon running?)")
+    except ImportError:
+        pass
+
+    # 5. Check Audio Devices
     try:
         from .utils.logging import ignore_stderr
         with ignore_stderr():

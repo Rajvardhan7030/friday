@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/go-shiori/go-readability"
 )
 
@@ -110,7 +112,8 @@ func main() {
 		html := page.MustHTML()
 		
 		// Use readability to extract useful text
-		article, err := readability.FromReader(strings.NewReader(html), req.URL)
+		parsedURL, _ := url.Parse(req.URL)
+		article, err := readability.FromReader(strings.NewReader(html), parsedURL)
 		var content string
 		if err == nil {
 			content = article.TextContent
@@ -156,7 +159,7 @@ func main() {
 
 		switch req.Type {
 		case "click":
-			err = page.MustElement(req.Selector).Click(nil, 1)
+			err = page.MustElement(req.Selector).Click(proto.InputMouseButtonLeft, 1)
 		case "type":
 			err = page.MustElement(req.Selector).Input(req.Value)
 		default:
