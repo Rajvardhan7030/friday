@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class LocalEngine(LLMEngine):
     """Local inference engine using Ollama."""
 
-    def __init__(self, primary_model: str, fallback_model: str, base_url: str="http://localhost:11434"):
+    def __init__(self, primary_model: str, fallback_model: str, base_url: str="http://localhost:11434", embedding_model: Optional[str] = None):
         if ollama is None:
             raise LLMError("The 'ollama' package is not installed. Install project dependencies to use the local LLM engine.")
         
@@ -34,6 +34,7 @@ class LocalEngine(LLMEngine):
             
         self._primary_model = primary_model
         self._fallback_model = fallback_model
+        self._embedding_model = embedding_model
         self.base_url = base_url
         self._client = ollama.AsyncClient(host=base_url)
         self._current_model = primary_model
@@ -163,6 +164,19 @@ class LocalEngine(LLMEngine):
     async def embed(self, text: str) -> List[float]:
         """Generate local embeddings."""
         tried_models: List[str] = []
+
+        # 0. Try embedding model if specified
+        if self._embedding_model:
+            try:
+                res = await self._embed_with_model(self._embedding_model, text)
+                self._known_embed_model = self._embedding_model
+                return res
+            except Exception as e:
+                if not self._is_model_not_found_error(e):
+                    logger.error(f"Ollama embedding error with {self._embedding_model}: {e}")
+                    raise LLMError(f"Failed to generate embeddings: {e}") from e
+                logger.warning(f"Embedding model '{self._embedding_model}' not found.")
+                tried_models.append(self._embedding_model)
 
         # 1. Always try primary model first
         try:

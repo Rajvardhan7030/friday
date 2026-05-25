@@ -4,7 +4,26 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from friday.llm.api import GeminiEngine, create_api_engine
+from friday.llm.api import GeminiEngine, create_api_engine, _is_retryable_api_error
+from unittest.mock import AsyncMock, MagicMock
+
+def test_is_retryable_api_error_handles_429():
+    import httpx
+    
+    # 1. Normal 429
+    response_normal = MagicMock(status_code=429, text="Too many requests")
+    error_normal = httpx.HTTPStatusError("429", request=MagicMock(), response=response_normal)
+    assert _is_retryable_api_error(error_normal) is True
+    
+    # 2. Quota 429
+    response_quota = MagicMock(status_code=429, text="Resource has been exhausted (e.g. check quota).")
+    error_quota = httpx.HTTPStatusError("429", request=MagicMock(), response=response_quota)
+    assert _is_retryable_api_error(error_quota) is False
+    
+    # 3. 500 Error
+    response_500 = MagicMock(status_code=500, text="Internal Server Error")
+    error_500 = httpx.HTTPStatusError("500", request=MagicMock(), response=response_500)
+    assert _is_retryable_api_error(error_500) is True
 
 
 def test_create_api_engine_normalizes_stale_gemini_alias():

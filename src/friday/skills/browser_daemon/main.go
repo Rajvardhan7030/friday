@@ -18,6 +18,7 @@ import (
 
 type ManagedBrowser struct {
 	Browser *rod.Browser
+	Pages   map[string]*rod.Page
 	Mu      sync.Mutex
 }
 
@@ -53,7 +54,10 @@ func (m *BrowserManager) GetBrowser(profile string, headless bool) (*ManagedBrow
 	}
 
 	b := rod.New().ControlURL(u).MustConnect()
-	managed := &ManagedBrowser{Browser: b}
+	managed := &ManagedBrowser{
+		Browser: b,
+		Pages:   make(map[string]*rod.Page),
+	}
 	m.browsers[key] = managed
 	return managed, nil
 }
@@ -69,12 +73,20 @@ type ActionRequest struct {
 	Selector string `json:"selector"`
 	Value    string `json:"value"`
 	Profile  string `json:"profile"`
+	PageID   string `json:"page_id"`
+}
+
+type CloseRequest struct {
+	Profile string `json:"profile"`
+	PageID  string `json:"page_id"`
 }
 
 type Response struct {
-	Success bool   `json:"success"`
-	Content string `json:"content,omitempty"`
-	Message string `json:"message,omitempty"`
+	Success bool     `json:"success"`
+	PageID  string   `json:"page_id,omitempty"`
+	Content string   `json:"content,omitempty"`
+	Message string   `json:"message,omitempty"`
+	Pages   []string `json:"pages,omitempty"`
 }
 
 func main() {
@@ -106,8 +118,10 @@ func main() {
 		defer managed.Mu.Unlock()
 
 		page := managed.Browser.MustPage(req.URL)
-		defer page.Close()
 		page.MustWaitLoad()
+
+		pageID := fmt.Sprintf("p_%d", time.Now().UnixNano())
+		managed.Pages[pageID] = page
 
 		html := page.MustHTML()
 		
@@ -118,12 +132,12 @@ func main() {
 		if err == nil {
 			content = article.TextContent
 		} else {
-			// Fallback: simple text extraction
 			content = page.MustElement("body").MustText()
 		}
 
 		json.NewEncoder(w).Encode(Response{
 			Success: true,
+			PageID:  pageID,
 			Content: strings.TrimSpace(content),
 		})
 	})
@@ -139,9 +153,7 @@ func main() {
 			req.Profile = "default"
 		}
 
-		// Actions usually happen on the active page. For simplicity, we assume the last opened page or search by URL.
-		// In a real daemon, we might need a PageID. For now, we'll just use the last opened page of the browser.
-		managed, err := manager.GetBrowser(req.Profile, true) // Action mode usually headless or uses current state
+		managed, err := manager.GetBrowser(req.Profile, true)
 		if err != nil {
 			json.NewEncoder(w).Encode(Response{Success: false, Message: err.Error()})
 			return
@@ -150,18 +162,29 @@ func main() {
 		managed.Mu.Lock()
 		defer managed.Mu.Unlock()
 
-		pages, _ := managed.Browser.Pages()
-		if len(pages) == 0 {
-			json.NewEncoder(w).Encode(Response{Success: false, Message: "No active pages"})
+		var page *rod.Page
+		if req.PageID != "" {
+			page = managed.Pages[req.PageID]
+		} else {
+			// Fallback to first page
+			pages, _ := managed.Browser.Pages()
+			if len(pages) > 0 {
+				page = pages[0]
+			}
+		}
+
+		if page == nil {
+			json.NewEncoder(w).Encode(Response{Success: false, Message: "Page not found"})
 			return
 		}
-		page := pages[0]
 
 		switch req.Type {
 		case "click":
 			err = page.MustElement(req.Selector).Click(proto.InputMouseButtonLeft, 1)
 		case "type":
 			err = page.MustElement(req.Selector).Input(req.Value)
+		case "content":
+			// Just get content
 		default:
 			err = fmt.Errorf("unknown action type: %s", req.Type)
 		}
@@ -169,7 +192,66 @@ func main() {
 		if err != nil {
 			json.NewEncoder(w).Encode(Response{Success: false, Message: err.Error()})
 		} else {
+			html := page.MustHTML()
+			parsedURL, _ := url.Parse(page.MustInfo().URL)
+			article, err := readability.FromReader(strings.NewReader(html), parsedURL)
+			content := ""
+			if err == nil {
+				content = article.TextContent
+			}
+			json.NewEncoder(w).Encode(Response{Success: true, Content: content})
+		}
+	})
+
+	http.HandleFunc("/pages", func(w http.ResponseWriter, r *http.Request) {
+		profile := r.URL.Query().Get("profile")
+		if profile == "" {
+			profile = "default"
+		}
+
+		managed, err := manager.GetBrowser(profile, true)
+		if err != nil {
+			json.NewEncoder(w).Encode(Response{Success: false, Message: err.Error()})
+			return
+		}
+
+		managed.Mu.Lock()
+		defer managed.Mu.Unlock()
+
+		var pageIDs []string
+		for id := range managed.Pages {
+			pageIDs = append(pageIDs, id)
+		}
+
+		json.NewEncoder(w).Encode(Response{Success: true, Pages: pageIDs})
+	})
+
+	http.HandleFunc("/close", func(w http.ResponseWriter, r *http.Request) {
+		var req CloseRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if req.Profile == "" {
+			req.Profile = "default"
+		}
+
+		managed, err := manager.GetBrowser(req.Profile, true)
+		if err != nil {
+			json.NewEncoder(w).Encode(Response{Success: false, Message: err.Error()})
+			return
+		}
+
+		managed.Mu.Lock()
+		defer managed.Mu.Unlock()
+
+		if page, ok := managed.Pages[req.PageID]; ok {
+			page.Close()
+			delete(managed.Pages, req.PageID)
 			json.NewEncoder(w).Encode(Response{Success: true})
+		} else {
+			json.NewEncoder(w).Encode(Response{Success: false, Message: "Page not found"})
 		}
 	})
 

@@ -16,9 +16,17 @@ class BrowserNavigateSchema(BaseModel):
     headless: bool = Field(True, description="Whether to run in headless mode")
 
 class BrowserActionSchema(BaseModel):
-    type: str = Field(..., description="The action type: 'click' or 'type'")
+    type: str = Field(..., description="The action type: 'click', 'type', or 'content'")
     selector: str = Field(..., description="The CSS selector for the target element")
     value: str = Field("", description="The value to type (if applicable)")
+    profile: str = Field("default", description="The browser profile to use")
+    page_id: Optional[str] = Field(None, description="The ID of the page to act on")
+
+class BrowserPagesSchema(BaseModel):
+    profile: str = Field("default", description="The browser profile to use")
+
+class BrowserCloseSchema(BaseModel):
+    page_id: str = Field(..., description="The ID of the page to close")
     profile: str = Field("default", description="The browser profile to use")
 
 class BrowserSkill(BaseSkill):
@@ -35,7 +43,7 @@ class BrowserSkill(BaseSkill):
     def description(self) -> str:
         return (
             "Controls a web browser to navigate sites, extract text, and perform actions. "
-            "Use this for searching information, logging into sites, and downloading reports."
+            "Supports multiple persistent pages and sessions."
         )
 
     async def execute(self, query: str, context: Dict[str, Any]) -> SkillResult:
@@ -46,7 +54,7 @@ class BrowserSkill(BaseSkill):
         return SkillResult(success=False, data=None, message="Use structured tool calls for browser control.")
 
     async def navigate(self, url: str, profile: str = "default", headless: bool = True) -> SkillResult:
-        """Navigate to a URL and return extracted text."""
+        """Navigate to a URL and return extracted text and page_id."""
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(
@@ -56,28 +64,59 @@ class BrowserSkill(BaseSkill):
                 resp.raise_for_status()
                 data = resp.json()
                 if data.get("success"):
-                    return SkillResult(success=True, data=data.get("content"))
+                    return SkillResult(
+                        success=True, 
+                        data={
+                            "content": data.get("content"),
+                            "page_id": data.get("page_id")
+                        }
+                    )
                 return SkillResult(success=False, data=None, message=data.get("message"))
         except Exception as e:
             logger.error(f"Browser navigation failed: {e}")
             return SkillResult(success=False, data=None, message=str(e))
 
-    async def perform_action(self, action_type: str, selector: str, value: str = "", profile: str = "default") -> SkillResult:
-        """Perform an action (click, type) on the current page."""
+    async def perform_action(self, action_type: str, selector: str, value: str = "", profile: str = "default", page_id: Optional[str] = None) -> SkillResult:
+        """Perform an action (click, type) on a specific page."""
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    f"{self.daemon_url}/action",
-                    json={"type": action_type, "selector": selector, "value": value, "profile": profile}
-                )
+                payload = {"type": action_type, "selector": selector, "value": value, "profile": profile}
+                if page_id:
+                    payload["page_id"] = page_id
+                    
+                resp = await client.post(f"{self.daemon_url}/action", json=payload)
                 resp.raise_for_status()
                 data = resp.json()
                 if data.get("success"):
-                    return SkillResult(success=True, data="Action performed successfully")
+                    return SkillResult(success=True, data=data.get("content") or "Action performed successfully")
                 return SkillResult(success=False, data=None, message=data.get("message"))
         except Exception as e:
             logger.error(f"Browser action failed: {e}")
             return SkillResult(success=False, data=None, message=str(e))
+
+    async def list_pages(self, profile: str = "default") -> SkillResult:
+        """List active pages."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{self.daemon_url}/pages", params={"profile": profile})
+                resp.raise_for_status()
+                data = resp.json()
+                if data.get("success"):
+                    return SkillResult(success=True, data=data.get("pages"))
+                return SkillResult(success=False, message=data.get("message"))
+        except Exception as e:
+            return SkillResult(success=False, message=str(e))
+
+    async def close_page(self, page_id: str, profile: str = "default") -> SkillResult:
+        """Close a specific page."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(f"{self.daemon_url}/close", json={"page_id": page_id, "profile": profile})
+                resp.raise_for_status()
+                data = resp.json()
+                return SkillResult(success=data.get("success"), message=data.get("message"))
+        except Exception as e:
+            return SkillResult(success=False, message=str(e))
 
     # Overriding register_mcp to register multiple tools for this skill
     def register_mcp(self):
@@ -88,7 +127,7 @@ class BrowserSkill(BaseSkill):
         mcp_client.register_tool(
             MCPTool(
                 name="browser_navigate",
-                description="Navigate to a URL and extract text content.",
+                description="Open a URL and return text content and a page_id for future actions.",
                 inputSchema=MCPToolSchema.from_model(BrowserNavigateSchema)
             ),
             self._mcp_navigate_handler
@@ -98,10 +137,30 @@ class BrowserSkill(BaseSkill):
         mcp_client.register_tool(
             MCPTool(
                 name="browser_action",
-                description="Perform an action (click, type) on the current web page.",
+                description="Perform an action (click, type, content) on a web page. Use page_id if available.",
                 inputSchema=MCPToolSchema.from_model(BrowserActionSchema)
             ),
             self._mcp_action_handler
+        )
+        
+        # 3. List Pages
+        mcp_client.register_tool(
+            MCPTool(
+                name="browser_list_pages",
+                description="List all active persistent browser pages.",
+                inputSchema=MCPToolSchema.from_model(BrowserPagesSchema)
+            ),
+            self._mcp_list_handler
+        )
+        
+        # 4. Close Page
+        mcp_client.register_tool(
+            MCPTool(
+                name="browser_close_page",
+                description="Close a persistent browser page by its ID.",
+                inputSchema=MCPToolSchema.from_model(BrowserCloseSchema)
+            ),
+            self._mcp_close_handler
         )
 
     async def _mcp_navigate_handler(self, **kwargs) -> Any:
@@ -118,7 +177,23 @@ class BrowserSkill(BaseSkill):
         selector = kwargs.get("selector")
         value = kwargs.get("value", "")
         profile = kwargs.get("profile", "default")
-        result = await self.perform_action(action_type, selector, value, profile)
+        page_id = kwargs.get("page_id")
+        result = await self.perform_action(action_type, selector, value, profile, page_id)
         if result.success:
             return result.data
+        return f"Error: {result.message}"
+
+    async def _mcp_list_handler(self, **kwargs) -> Any:
+        profile = kwargs.get("profile", "default")
+        result = await self.list_pages(profile)
+        if result.success:
+            return result.data
+        return f"Error: {result.message}"
+
+    async def _mcp_close_handler(self, **kwargs) -> Any:
+        page_id = kwargs.get("page_id")
+        profile = kwargs.get("profile", "default")
+        result = await self.close_page(page_id, profile)
+        if result.success:
+            return "Page closed successfully"
         return f"Error: {result.message}"

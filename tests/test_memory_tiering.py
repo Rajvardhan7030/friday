@@ -45,9 +45,14 @@ async def test_memory_tiering(tmp_path):
     # but AgentRunner sets up memory in __init__.
     # So we patch LocalEngine and create_api_engine to return our mock, 
     # or just accept that we need to overwrite it.
-    with patch("friday.core.agent_runner.LocalEngine", return_value=mock_llm), \
-         patch("friday.core.agent_runner.create_api_engine", return_value=mock_llm):
+    with patch("friday.core.agent_runner.ModelRouter") as mock_router_class:
+        mock_router_instance = MagicMock()
+        mock_router_instance.get_engine_for_task = AsyncMock(return_value=mock_llm)
+        mock_router_instance.aclose = AsyncMock()
+        mock_router_class.return_value = mock_router_instance
+        
         runner = AgentRunner(config)
+        await runner._initialize_primary_llm()
         # Verify it uses our mock
         assert runner.llm == mock_llm
 
@@ -63,9 +68,14 @@ async def test_memory_tiering(tmp_path):
     
     # 6. Verify LTM storage
     # Re-init runner to check retrieval
-    with patch("friday.core.agent_runner.LocalEngine", return_value=mock_llm), \
-         patch("friday.core.agent_runner.create_api_engine", return_value=mock_llm):
+    with patch("friday.core.agent_runner.ModelRouter") as mock_router_class:
+        mock_router_instance = MagicMock()
+        mock_router_instance.get_engine_for_task = AsyncMock(return_value=mock_llm)
+        mock_router_instance.aclose = AsyncMock()
+        mock_router_class.return_value = mock_router_instance
+        
         runner2 = AgentRunner(config)
+        await runner2._initialize_primary_llm()
         # Verify it uses our mock
         assert runner2.llm == mock_llm
 
@@ -73,6 +83,11 @@ async def test_memory_tiering(tmp_path):
     mock_llm.embed.return_value = [0.1] * 384
     # Ensure memory is ready
     await runner2._ensure_memory_ready()
+    
+    # We need to mock similarity_search on the newly initialized vector_store
+    runner2.vector_store.similarity_search = AsyncMock(return_value=[
+        {"content": "User likes pizza", "metadata": {"source": "consolidator"}}
+    ])
     
     # Check LTM collection
     ltm_collection = config.get("memory.ltm_collection", "ltm_memory")

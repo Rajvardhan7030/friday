@@ -11,7 +11,7 @@ from friday.agents.base import Context
 # from friday.agents.code_assistant import _resolve_workspace_dir, code_task_handler
 from friday.plugins.morning_digest.main import morning_digest_handler
 from friday.plugins.research.main import ResearchAgent
-from friday.agents.system_commands import clear_handler
+from friday.agents.command_handlers import clear_handler
 from friday.core.agent_runner import Session
 from friday.core.agent_runner import AgentRunner
 from friday.core.config import Config
@@ -51,7 +51,7 @@ async def test_clear_command_matches_plain_clear():
 
     assert command.name == "Clear"
     assert session.history == []
-    assert result == "Conversation history cleared."
+    assert result == "Session history cleared (in-memory only)."
 
 
 def test_identity_command_does_not_match_mid_sentence():
@@ -228,7 +228,7 @@ def test_agent_runner_discovers_modules_dynamically(monkeypatch):
     )
     monkeypatch.setattr(
         "friday.core.agent_runner.pkgutil.iter_modules",
-        lambda paths: [FakeModuleInfo("system_commands"), FakeModuleInfo("morning_digest"), FakeModuleInfo("_private")],
+        lambda paths: [FakeModuleInfo("command_handlers"), FakeModuleInfo("morning_digest"), FakeModuleInfo("_private")],
     )
 
     runner = AgentRunner.__new__(AgentRunner)
@@ -239,7 +239,7 @@ def test_agent_runner_discovers_modules_dynamically(monkeypatch):
 
     assert imported_modules == [
         "friday.agents",
-        "friday.agents.system_commands",
+        "friday.agents.command_handlers",
         "friday.agents.morning_digest",
     ]
 
@@ -264,7 +264,7 @@ def test_agent_runner_skips_configured_agent_modules(monkeypatch):
     )
     monkeypatch.setattr(
         "friday.core.agent_runner.pkgutil.iter_modules",
-        lambda paths: [FakeModuleInfo("system_commands"), FakeModuleInfo("morning_digest")],
+        lambda paths: [FakeModuleInfo("command_handlers"), FakeModuleInfo("morning_digest")],
     )
 
     runner = AgentRunner.__new__(AgentRunner)
@@ -275,7 +275,7 @@ def test_agent_runner_skips_configured_agent_modules(monkeypatch):
 
     assert imported_modules == [
         "friday.agents",
-        "friday.agents.system_commands",
+        "friday.agents.command_handlers",
     ]
 
 
@@ -293,6 +293,7 @@ async def test_agent_runner_injects_long_term_memory_into_llm_context():
     runner.llm.chat = AsyncMock(return_value=type("Response", (), {"content": "memory aware answer", "tool_calls": None})())
     runner.llm.embed = AsyncMock(return_value=[0.1] * 768)
     runner.vector_store = MagicMock()
+    runner.vector_store.llm = runner.llm
     runner.vector_store.similarity_search = AsyncMock(return_value=[
         {"content": "Friday likes local-first tools.", "metadata": {"source": "notes.md"}}
     ])
@@ -322,6 +323,7 @@ async def test_agent_runner_remembers_successful_llm_exchanges():
     runner.llm.chat = AsyncMock(return_value=type("Response", (), {"content": "stored answer", "tool_calls": None})())
     runner.llm.embed = AsyncMock(return_value=[0.1] * 768)
     runner.vector_store = MagicMock()
+    runner.vector_store.llm = runner.llm
     runner.vector_store.similarity_search = AsyncMock(return_value=[])
     runner.vector_store.add_documents = AsyncMock()
     runner.conversation_memory = MagicMock()
@@ -346,8 +348,11 @@ async def test_agent_runner_gracefully_disables_memory_when_initialization_fails
     }.get(key, default)
     runner._memory_lock = asyncio.Lock()
     runner.vector_store = MagicMock()
+    runner.vector_store.llm = MagicMock()
     runner.vector_store.initialize = AsyncMock(side_effect=RuntimeError("chromadb unavailable"))
     runner.document_indexer = MagicMock()
+    runner.model_router = AsyncMock()
+    runner.memory_consolidator = MagicMock()
     runner._memory_ready = False
     runner._memory_disabled_reason = None
 
@@ -410,6 +415,7 @@ from friday.agents.sandbox_executor import SandboxExecutor
 async def test_code_assistant_returns_clean_message_on_sandbox_failure(monkeypatch, tmp_path):
     config = Config()
     llm = MagicMock()
+    del llm.get_engine_for_task
     # Mock LLM to return a simple code block
     llm.chat = AsyncMock(side_effect=[
         type("Response", (), {"content": "Step 1: print ok"})(), # Plan
@@ -419,7 +425,7 @@ async def test_code_assistant_returns_clean_message_on_sandbox_failure(monkeypat
     ])
     
     executor = SandboxExecutor(config)
-    agent = CodeAssistantAgent(llm, executor=executor)
+    agent = CodeAssistantAgent(llm, sandbox=executor)
     
     # Mock the low-level sandbox call to fail
     monkeypatch.setattr(

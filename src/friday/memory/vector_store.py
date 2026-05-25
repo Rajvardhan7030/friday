@@ -5,6 +5,7 @@ import uuid
 import asyncio
 from typing import List, Dict, Any, Optional
 from ..llm.engine import LLMEngine
+from ..core.exceptions import MemoryInitializationError
 
 try:
     import chromadb
@@ -30,23 +31,26 @@ class VectorStore:
     async def initialize(self, collection_name: Optional[str] = None) -> None:
         """Explicitly initialize the ChromaDB client and collection."""
         if chromadb is None or Settings is None:
-            raise RuntimeError("The 'chromadb' package is not installed. Install project dependencies to use vector storage.")
+            raise MemoryInitializationError("The 'chromadb' package is not installed. Install project dependencies to use vector storage.")
         
         async with self._lock:
-            if self.client is None:
-                self.client = chromadb.PersistentClient(
-                    path=self.persist_directory,
-                    settings=Settings(allow_reset=True)
-                )
-            
-            name = collection_name or self.default_collection
-            if name not in self._collections:
-                self._collections[name] = self.client.get_or_create_collection(
-                    name=name,
-                    metadata={"hnsw:space": "cosine"}
-                )
-            
-            self.collection = self._collections[name]
+            try:
+                if self.client is None:
+                    self.client = chromadb.PersistentClient(
+                        path=self.persist_directory,
+                        settings=Settings(allow_reset=True)
+                    )
+                
+                name = collection_name or self.default_collection
+                if name not in self._collections:
+                    self._collections[name] = self.client.get_or_create_collection(
+                        name=name,
+                        metadata={"hnsw:space": "cosine"}
+                    )
+                
+                self.collection = self._collections[name]
+            except Exception as e:
+                raise MemoryInitializationError(f"Failed to initialize ChromaDB: {e}")
         logger.info(f"VectorStore collection '{name}' initialized at {self.persist_directory}")
 
     async def get_collection(self, name: str) -> Any:

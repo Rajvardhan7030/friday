@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import yaml
+import shutil
 import importlib
 import logging
 from pathlib import Path
@@ -19,6 +20,11 @@ class PluginManifest(BaseModel):
     description: str = Field(default="", description="Short description of the plugin")
     author: str = Field(default="Unknown", description="Author of the plugin")
     entry_point: str = Field(description="Python module path to load (e.g., 'my_plugin.main')")
+    type: str = Field(default="skill", description="Type of plugin: 'skill', 'agent', or 'theme'")
+    permissions: List[str] = Field(default_factory=list, description="List of required permissions (e.g., 'network:github.com')")
+    config_schema: Dict[str, Any] = Field(default_factory=dict, description="JSON schema for plugin configuration")
+    min_friday_version: Optional[str] = Field(None, description="Minimum Friday version required")
+    enabled: bool = Field(default=True, description="Whether the plugin is enabled")
 
 class PluginManager:
     """Discovers and loads Friday plugins."""
@@ -28,9 +34,10 @@ class PluginManager:
         self.plugin_dirs = plugin_dirs or []
         
         # Add default user plugin dir
-        user_plugin_dir = Path.home() / ".friday" / "plugins"
-        if user_plugin_dir.exists() and user_plugin_dir not in self.plugin_dirs:
-            self.plugin_dirs.append(user_plugin_dir)
+        self.user_plugin_dir = Path.home() / ".friday" / "plugins"
+        self.user_plugin_dir.mkdir(parents=True, exist_ok=True)
+        if self.user_plugin_dir not in self.plugin_dirs:
+            self.plugin_dirs.append(self.user_plugin_dir)
             
         # Add builtin plugin dir
         builtin_plugin_dir = Path(__file__).parent.parent / "plugins"
@@ -72,6 +79,10 @@ class PluginManager:
             manifest = PluginManifest(**data)
             self.plugins[manifest.name] = manifest
             
+            if not manifest.enabled:
+                logger.info(f"Plugin '{manifest.name}' is disabled.")
+                return
+
             # Dynamically import the entry point
             try:
                 importlib.import_module(manifest.entry_point)
@@ -81,6 +92,24 @@ class PluginManager:
                 
         except Exception as e:
             logger.error(f"Error loading plugin manifest from {manifest_path}: {e}")
+
+    def install_plugin(self, source_path: Path) -> bool:
+        """Copy a plugin directory to the user plugin folder."""
+        try:
+            if not source_path.is_dir():
+                logger.error(f"Plugin source must be a directory: {source_path}")
+                return False
+            
+            dest_path = self.user_plugin_dir / source_path.name
+            if dest_path.exists():
+                shutil.rmtree(dest_path)
+                
+            shutil.copytree(source_path, dest_path)
+            logger.info(f"Installed plugin to {dest_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to install plugin: {e}")
+            return False
 
 # Global plugin manager instance
 plugin_manager = PluginManager()

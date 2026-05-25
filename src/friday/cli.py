@@ -486,6 +486,271 @@ async def friday_model_scout(args: list[str]):
         ollama_only=parsed_args.ollama_only
     )
 
+async def friday_memory(args: list[str]):
+    """Manage and search persistent memory."""
+    config = Config()
+    from .core.agent_runner import AgentRunner
+    from rich.table import Table
+    
+    # Initialize runner to get access to memory components
+    runner = AgentRunner(config)
+    await runner._ensure_memory_ready()
+    
+    if not runner.vector_store:
+        console.print("[bold red]Memory is disabled or unavailable.[/bold red]")
+        return
+
+    if not args or args[0] == "search":
+        query = " ".join(args[1:]) if len(args) > 1 else Prompt.ask("Enter search query")
+        if not query:
+            return
+            
+        with console.status(f"Searching memory for '[cyan]{query}[/cyan]'..."):
+            results = await runner.vector_store.similarity_search(query, k=5)
+            # Also search LTM
+            ltm_results = await runner.vector_store.similarity_search(
+                query, 
+                k=3, 
+                collection_name=config.get("memory.ltm_collection", "ltm_memory")
+            )
+        
+        if not results and not ltm_results:
+            console.print("[yellow]No matching memories found.[/yellow]")
+            return
+            
+        table = Table(title=f"Memory Search Results for '{query}'")
+        table.add_column("Type", style="cyan")
+        table.add_column("Content", style="white")
+        table.add_column("Source", style="dim")
+        
+        for r in ltm_results:
+            table.add_row("Fact (LTM)", r["content"], "consolidator")
+        for r in results:
+            source = r["metadata"].get("source", "unknown")
+            table.add_row("Chat (MTM)", r["content"], source)
+            
+        console.print(table)
+
+    elif args[0] == "list":
+        # List recent sessions from SQLite
+        if runner.conversation_memory:
+            from sqlalchemy import select
+            from .memory.conversation import ChatMessage
+            
+            async with runner.conversation_memory.session_factory() as session:
+                stmt = select(ChatMessage.session_id).distinct().limit(20)
+                res = await session.execute(stmt)
+                sessions = res.scalars().all()
+                
+            if not sessions:
+                console.print("[yellow]No persistent sessions found.[/yellow]")
+                return
+                
+            table = Table(title="Recent Sessions")
+            table.add_column("Session ID", style="cyan")
+            for s_id in sessions:
+                table.add_row(s_id)
+            console.print(table)
+            console.print("[dim]Use 'friday memory show <session_id>' to view history.[/dim]")
+
+    elif args[0] == "show" and len(args) >= 2:
+        s_id = args[1]
+        if runner.conversation_memory:
+            history = await runner.conversation_memory.get_history(s_id, limit=50)
+            if not history:
+                console.print(f"[yellow]No history found for session {s_id}[/yellow]")
+                return
+                
+            table = Table(title=f"History for Session {s_id}")
+            table.add_column("Role", style="cyan")
+            table.add_column("Content", style="white")
+            for msg in history:
+                table.add_row(msg["role"], msg["content"])
+            console.print(table)
+            
+    elif args[0] == "reset":
+        from rich.prompt import Confirm
+        if Confirm.ask("[bold red]Are you sure you want to wipe ALL persistent memory?[/bold red]"):
+            await runner.conversation_memory.clear_all()
+            ltm = config.get("memory.ltm_collection", "ltm_memory")
+            await runner.vector_store.reset_collection(ltm)
+            await runner.vector_store.reset_collection("friday_memory")
+            console.print("[bold green]All persistent memory has been wiped.[/bold green]")
+            
+    else:
+        console.print("[yellow]Usage:[/yellow]")
+        console.print("  friday memory search <query>")
+        console.print("  friday memory list")
+        console.print("  friday memory show <session_id>")
+        console.print("  friday memory reset")
+
+    await runner.aclose()
+
+async def friday_traces(args: list[str]):
+    """Manage and view agent traces."""
+    from .core.observability import trace_manager
+    from rich.table import Table
+    from rich.tree import Tree
+    
+    if not args or args[0] == "list":
+        limit = 10
+        if len(args) > 1:
+            try:
+                limit = int(args[1])
+            except ValueError:
+                pass
+                
+        traces = trace_manager.get_recent_traces(limit=limit)
+        if not traces:
+            console.print("[yellow]No traces found.[/yellow]")
+            return
+            
+        table = Table(title=f"Recent Agent Traces (Last {len(traces)})")
+        table.add_column("ID", style="cyan")
+        table.add_column("Time", style="green")
+        table.add_column("Input", style="white", overflow="ellipsis", max_width=40)
+        table.add_column("Events", style="magenta")
+        table.add_column("Status", style="bold")
+        
+        for t in traces:
+            status = "[green]SUCCESS[/green]" if t.success else "[red]FAILED[/red]"
+            table.add_row(
+                t.trace_id,
+                t.start_time.strftime("%H:%M:%S"),
+                t.input_text,
+                str(len(t.events)),
+                status
+            )
+        console.print(table)
+        console.print("[dim]Use 'friday traces show <id>' to view details.[/dim]")
+        
+    elif args[0] == "show" and len(args) >= 2:
+        trace_id = args[1]
+        trace = trace_manager.get_trace_by_id(trace_id)
+        if not trace:
+            console.print(f"[bold red]Trace {trace_id} not found.[/bold red]")
+            return
+            
+        tree = Tree(f"[bold cyan]Trace {trace_id}[/bold cyan] - {trace.input_text}")
+        tree.add(f"[dim]Started: {trace.start_time.isoformat()}[/dim]")
+        
+        events_node = tree.add("[bold magenta]Events[/bold magenta]")
+        for event in trace.events:
+            event_text = f"[green]{event.timestamp.strftime('%H:%M:%S.%f')[:-3]}[/green] [bold]{event.event_type}[/bold]"
+            if event.message:
+                event_text += f": {event.message}"
+            
+            node = events_node.add(event_text)
+            if event.data:
+                # Add data as a sub-tree if not too large
+                data_str = json.dumps(event.data, indent=2)
+                if len(data_str) < 500:
+                    node.add(f"[dim]{data_str}[/dim]")
+                else:
+                    node.add("[dim](Data too large to display)[/dim]")
+        
+        tree.add(f"\n[bold green]Final Output:[/bold green]\n{trace.final_output}")
+        console.print(tree)
+    else:
+        console.print("[yellow]Usage:[/yellow]")
+        console.print("  friday traces list [limit]")
+        console.print("  friday traces show <id>")
+
+async def friday_plugins(args: list[str]):
+    """Manage Friday plugins."""
+    from .core.plugin import plugin_manager
+    from rich.table import Table
+    
+    if not args or args[0] == "list":
+        # Ensure plugins are discovered
+        plugin_manager.discover_plugins()
+        
+        if not plugin_manager.plugins:
+            console.print("[yellow]No plugins installed.[/yellow]")
+            return
+            
+        table = Table(title="Installed Friday Plugins")
+        table.add_column("Name", style="cyan")
+        table.add_column("Version", style="green")
+        table.add_column("Type", style="magenta")
+        table.add_column("Status", style="bold")
+        
+        for name, p in plugin_manager.plugins.items():
+            status = "[green]ENABLED[/green]" if p.enabled else "[red]DISABLED[/red]"
+            table.add_row(name, p.version, p.type, status)
+        console.print(table)
+        console.print("[dim]Use 'friday plugins inspect <name>' to view details.[/dim]")
+        
+    elif args[0] == "inspect" and len(args) >= 2:
+        name = args[1]
+        plugin_manager.discover_plugins()
+        p = plugin_manager.plugins.get(name)
+        if not p:
+            console.print(f"[bold red]Plugin {name} not found.[/bold red]")
+            return
+            
+        console.print(Panel(
+            f"[bold cyan]{p.name}[/bold cyan] v{p.version} by {p.author}\n\n"
+            f"{p.description}\n\n"
+            f"Type: {p.type}\n"
+            f"Entry Point: {p.entry_point}\n"
+            f"Permissions: {', '.join(p.permissions) or 'None'}",
+            title="Plugin Details"
+        ))
+    else:
+        console.print("[yellow]Usage:[/yellow]")
+        console.print("  friday plugins list")
+        console.print("  friday plugins inspect <name>")
+
+async def friday_models(args: list[str]):
+    """Manage local models."""
+    config = Config()
+    from .llm.local import LocalEngine
+    from rich.table import Table
+    
+    # Initialize a local engine to talk to Ollama
+    llm = LocalEngine(config.get("llm.primary_model"), config.get("llm.fallback_model"), config.get("llm.base_url"))
+
+    if not args or args[0] == "list":
+        models = await llm.get_available_models()
+        if not models:
+            console.print("[yellow]No local models found in Ollama.[/yellow]")
+            return
+            
+        table = Table(title="Local Ollama Models")
+        table.add_column("Model Name", style="cyan")
+        table.add_column("Status", style="green")
+        
+        primary = config.get("llm.primary_model")
+        
+        for m in models:
+            status = "[bold green]ACTIVE[/bold green]" if m == primary else "Available"
+            table.add_row(m, status)
+        console.print(table)
+        
+    elif args[0] == "pull" and len(args) >= 2:
+        model_name = args[1]
+        await ollama_pull(model_name)
+        
+    elif args[0] == "use" and len(args) >= 2:
+        model_name = args[1]
+        # Check if model exists
+        models = await llm.get_available_models()
+        if model_name not in models:
+            console.print(f"[bold yellow]Model {model_name} not found. Pulling...[/bold yellow]")
+            if not await ollama_pull(model_name):
+                return
+        
+        config.set("llm.primary_model", model_name)
+        config.save()
+        console.print(f"[bold green]Now using {model_name} as the primary model.[/bold green]")
+        
+    else:
+        console.print("[yellow]Usage:[/yellow]")
+        console.print("  friday models list")
+        console.print("  friday models pull <name>")
+        console.print("  friday models use <name>")
+
 async def main(voice_output_enabled: bool = False):
     """Main interactive loop."""
     cli = FridayCLI(voice_output_enabled=voice_output_enabled)
@@ -574,6 +839,38 @@ def app():
             return
         except Exception as e:
             print(f"Config command failed: {e}")
+            sys.exit(1)
+            
+    if normalized_args[:1] == ["traces"]:
+        try:
+            asyncio.run(friday_traces(raw_args[1:]))
+            return
+        except Exception as e:
+            print(f"Traces command failed: {e}")
+            sys.exit(1)
+            
+    if normalized_args[:1] == ["memory"]:
+        try:
+            asyncio.run(friday_memory(raw_args[1:]))
+            return
+        except Exception as e:
+            print(f"Memory command failed: {e}")
+            sys.exit(1)
+            
+    if normalized_args[:1] == ["models"]:
+        try:
+            asyncio.run(friday_models(raw_args[1:]))
+            return
+        except Exception as e:
+            print(f"Models command failed: {e}")
+            sys.exit(1)
+            
+    if normalized_args[:1] == ["plugins"]:
+        try:
+            asyncio.run(friday_plugins(raw_args[1:]))
+            return
+        except Exception as e:
+            print(f"Plugins command failed: {e}")
             sys.exit(1)
     
     try:

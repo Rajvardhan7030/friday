@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 from .engine import LLMEngine, Message, LLMResponse
-from ..core.exceptions import LLMError
+from ..core.exceptions import LLMError, ProviderRateLimitError
 
 try:
     import httpx
@@ -28,7 +28,12 @@ def _is_retryable_api_error(e: Exception) -> bool:
     """Check if the error is a transient API error that should be retried."""
     if isinstance(e, httpx.HTTPStatusError):
         # Retry on Rate Limit (429) or Server Errors (5xx)
-        return e.response.status_code == 429 or e.response.status_code >= 500
+        if e.response.status_code == 429:
+            # If it's a quota exhausted error, retrying won't help
+            if "quota" in e.response.text.lower() or "exhausted" in e.response.text.lower():
+                return False
+            return True
+        return e.response.status_code >= 500
     if isinstance(e, (httpx.ConnectError, httpx.TimeoutException, httpx.ReadTimeout, httpx.WriteTimeout)):
         # Retry on connection issues or timeouts
         return True
@@ -110,8 +115,8 @@ class APIEngine(LLMEngine):
 
     @retry(
         reraise=True,
-        stop=stop_after_attempt(10), # Be more patient
-        wait=wait_exponential(multiplier=2, min=5, max=120), # Slower backoff for rate limits
+        stop=stop_after_attempt(3), # Stop sooner to avoid long hangs
+        wait=wait_exponential(multiplier=2, min=2, max=10), # Faster backoff for rate limits
         retry=retry_if_exception(_is_retryable_api_error),
         before_sleep=before_sleep_log(logger, logging.WARNING)
     )
@@ -163,6 +168,8 @@ class APIEngine(LLMEngine):
                 tool_calls=tool_calls
             )
         except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                raise ProviderRateLimitError(f"Rate limit exceeded for provider {self._provider}. {self._format_http_error(e)}")
             if e.response.status_code in (401, 403):
                 raise LLMError(f"Authentication failed (401/403). Please check your API key in config.yaml.") from e
             raise LLMError(f"API LLM engine failed: {self._format_http_error(e)}")
@@ -218,8 +225,25 @@ class APIEngine(LLMEngine):
         return [item["embedding"] for item in items]
 
     def _format_http_error(self, error: "httpx.HTTPStatusError") -> str:
-        """Include provider error body; 400s are otherwise impossible to diagnose."""
+        """Include provider error body; try to extract a clean message, else truncate."""
         body = error.response.text.strip()
+        try:
+            import json
+            data = json.loads(body)
+            # Handle list of errors (e.g. Gemini sometimes returns a list)
+            if isinstance(data, list) and len(data) > 0:
+                data = data[0]
+            if isinstance(data, dict) and "error" in data:
+                err = data["error"]
+                if isinstance(err, dict) and "message" in err:
+                    return f"{error}; {err['message']}"
+                elif isinstance(err, str):
+                    return f"{error}; {err}"
+            elif isinstance(data, dict) and "message" in data:
+                return f"{error}; {data['message']}"
+        except Exception:
+            pass
+
         if len(body) > 1000:
             body = body[:1000] + "..."
         return f"{error}; response body: {body}" if body else str(error)

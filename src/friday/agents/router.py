@@ -6,9 +6,10 @@ Orchestrates intent detection and routing to specialized agents.
 import logging
 import json
 import re
-from typing import Dict, Any, List, Optional, Type
+from typing import Dict, Any, List, Optional, Type, Union
 from .base import BaseAgent, Context, AgentResult
 from ..llm.engine import LLMEngine, Message
+from ..llm.router import ModelRouter
 from ..core.config import Config
 
 logger = logging.getLogger(__name__)
@@ -19,11 +20,26 @@ class AgentRouter:
     Detects user intent and delegates to the appropriate specialized agent.
     """
 
-    def __init__(self, llm_engine: LLMEngine, config: Optional[Config] = None):
-        self.llm = llm_engine
+    def __init__(self, llm_engine: Union[LLMEngine, ModelRouter], config: Optional[Config] = None):
         self.config = config or Config()
         self._agents: Dict[str, BaseAgent] = {}
         self._fallback_agent_name = "general_chat"
+        
+        # Support both raw LLMEngine and ModelRouter
+        if isinstance(llm_engine, ModelRouter):
+            self.model_router = llm_engine
+            self.llm = None # Will be lazily initialized
+        else:
+            self.llm = llm_engine
+            self.model_router = None
+
+    async def _get_llm(self, task_type: str = "general_chat") -> LLMEngine:
+        """Lazily initialize or retrieve the LLM engine."""
+        if self.llm:
+            return self.llm
+        if self.model_router:
+            return await self.model_router.get_engine_for_task(task_type)
+        raise ValueError("No LLM engine or ModelRouter available")
 
     def register_agent(self, agent: BaseAgent):
         """Register a specialized agent."""
@@ -37,10 +53,18 @@ class AgentRouter:
         chat_history = chat_history or []
         
         # 1. Detect Intent
-        target_agent_name = await self._detect_intent(user_query, chat_history)
+        target_agent_name = await self.detect_intent(user_query, chat_history)
         
         # 2. Delegate to Agent
+        return await self.route_to(target_agent_name, user_query, chat_history)
+
+    async def route_to(self, target_agent_name: str, user_query: str, chat_history: List[Dict[str, str]] = None) -> AgentResult:
+        """
+        Route to a specific agent by name.
+        """
+        chat_history = chat_history or []
         agent = self._agents.get(target_agent_name)
+        
         if not agent:
             logger.info(f"Routing to fallback (general chat) for query: {user_query}")
             return await self._run_general_chat(user_query, chat_history)
@@ -49,7 +73,7 @@ class AgentRouter:
         ctx = Context(user_query=user_query, chat_history=chat_history)
         return await agent.run(ctx)
 
-    async def _detect_intent(self, query: str, history: List[Dict[str, str]]) -> str:
+    async def detect_intent(self, query: str, history: List[Dict[str, str]]) -> str:
         """
         Use the LLM to classify the user's intent based on agent descriptions.
         """
@@ -79,7 +103,8 @@ Respond ONLY with JSON: {{"agent": "category_name"}}
         ]
         
         try:
-            response = await self.llm.chat(messages)
+            llm = await self._get_llm("general_chat")
+            response = await llm.chat(messages)
             data = self._parse_json(response.content)
             return data.get("agent", "general_chat")
         except Exception as e:
@@ -107,6 +132,6 @@ Respond ONLY with JSON: {{"agent": "category_name"}}
         for msg in history[-5:]: # Last 5 turns for context
             messages.append(Message(role=msg["role"], content=msg["content"]))
         
-        response = await self.llm.chat(messages)
+        llm = await self._get_llm("general_chat")
+        response = await llm.chat(messages)
         return AgentResult(content=response.content)
-

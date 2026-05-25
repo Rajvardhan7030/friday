@@ -1,8 +1,10 @@
 """Morning Digest Agent."""
 
 import logging
+import asyncio
+from datetime import datetime
 from typing import Dict, List
-from friday.agents.base import BaseAgent, Context, AgentResult
+from friday.agents.base import BaseAgent, Context, AgentResult, AgentMetadata
 from friday.llm.engine import LLMEngine, Message
 from friday.core.registry import registry
 from friday.core.agent_runner import Session
@@ -66,23 +68,31 @@ class MorningDigestAgent(BaseAgent):
 
     async def run(self, ctx: Context) -> AgentResult:
         """Run the morning briefing pipeline with timezone awareness."""
-        from datetime import datetime
         now = datetime.now()
         current_time_str = now.strftime("%A, %B %d, %Y %I:%M %p")
         logger.info(f"Starting morning digest at {current_time_str}...")
 
-        # 1. Gather data (pass current date context)
+        # 1. Gather data in parallel
         context = {"current_time": current_time_str, "date": now.strftime("%Y-%m-%d")}
-        emails = await self.email_skill.execute("", context)
-        calendar = await self.calendar_skill.execute("", context)
-        news = await self.news_skill.execute("", context)
+        
+        results = await asyncio.gather(
+            self.email_skill.execute("", context),
+            self.calendar_skill.execute("", context),
+            self.news_skill.execute("", context),
+            return_exceptions=True
+        )
+        
+        # Handle potential exceptions in gather
+        emails = results[0] if not isinstance(results[0], Exception) else type('obj', (object,), {'success': False, 'data': []})
+        calendar = results[1] if not isinstance(results[1], Exception) else type('obj', (object,), {'success': False, 'data': []})
+        news = results[2] if not isinstance(results[2], Exception) else type('obj', (object,), {'success': False, 'data': []})
 
         # 2. Build prompt
         prompt = self._build_briefing_prompt(
             current_time_str,
-            emails.data if emails.success else [],
-            calendar.data if calendar.success else [],
-            news.data if news.success else []
+            emails.data if hasattr(emails, 'success') and emails.success else [],
+            calendar.data if hasattr(calendar, 'success') and calendar.success else [],
+            news.data if hasattr(news, 'success') and news.success else []
         )
 
         # 3. Generate briefing via LLM
@@ -95,16 +105,14 @@ class MorningDigestAgent(BaseAgent):
         briefing_text = response.content
 
         # 4. Speak briefing
-        await self.tts.speak(briefing_text)
+        if self.tts:
+            await self.tts.speak(briefing_text)
 
         return AgentResult(
             content=briefing_text,
-            metadata={
-                "current_time": current_time_str,
-                "emails_count": len(emails.data) if emails.success else 0,
-                "events_count": len(calendar.data) if calendar.success else 0,
-                "news_count": len(news.data) if news.success else 0
-            }
+            metadata=AgentMetadata(
+                tts_content=briefing_text
+            )
         )
 
     def _build_briefing_prompt(self, current_time: str, emails: List[Dict], calendar: List[Dict], news: List[Dict]) -> str:

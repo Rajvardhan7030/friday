@@ -3,7 +3,7 @@
 import logging
 import asyncio
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, event
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -18,7 +18,7 @@ class ChatMessage(Base):
     session_id = Column(String(50), index=True)
     role = Column(String(20))
     content = Column(Text)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     metadata_json = Column(JSON, nullable=True)
 
 class ConversationMemory:
@@ -90,5 +90,14 @@ class ConversationMemory:
         async with self._write_lock:
             async with self.session_factory() as session:
                 stmt = delete(ChatMessage).where(ChatMessage.session_id == session_id)
+                await session.execute(stmt)
+                await session.commit()
+
+    async def clear_all(self) -> None:
+        """Wipe all chat history from the database."""
+        from sqlalchemy import delete
+        async with self._write_lock:
+            async with self.session_factory() as session:
+                stmt = delete(ChatMessage)
                 await session.execute(stmt)
                 await session.commit()

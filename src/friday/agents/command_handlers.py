@@ -37,13 +37,50 @@ async def identity_handler(session: Session, **kwargs):
 @registry.register(
     name="Clear",
     regex=r"^(?:clear|reset|delete)(?: (?:history|session|chat))?$",
-    description="Clear the current conversation history",
-    usage="clear or clear history"
+    description="Clear the current in-memory conversation history",
+    usage="clear session"
 )
 async def clear_handler(session: Session, **kwargs):
-    """Resets the session history."""
+    """Resets the in-memory session history."""
     session.history = []
-    return "Conversation history cleared."
+    return "Session history cleared (in-memory only)."
+
+@registry.register(
+    name="MemoryForget",
+    regex=r"^memory forget session$",
+    description="Permanently delete the current session from persistent history",
+    usage="memory forget session"
+)
+async def memory_forget_handler(session: Session, conversation_memory=None, **kwargs):
+    """Deletes the current session from the SQLite database."""
+    if conversation_memory:
+        await conversation_memory.clear_history(session.session_id)
+        session.history = []
+        return f"Permanently forgotten session {session.session_id} from persistent storage."
+    return "Error: Conversation memory not available."
+
+@registry.register(
+    name="MemoryReset",
+    regex=r"^memory reset$",
+    description="Permanently wipe ALL persistent memory (SQLite and Vector Store)",
+    usage="memory reset"
+)
+async def memory_reset_handler(session: Session, vector_store=None, conversation_memory=None, config=None, **kwargs):
+    """Wipes all persistent data."""
+    results = []
+    
+    if conversation_memory:
+        await conversation_memory.clear_all()
+        results.append("Conversation Database (SQLite) reset.")
+
+    if vector_store and config:
+        ltm = config.get("memory.ltm_collection", "ltm_memory")
+        await vector_store.reset_collection(ltm)
+        await vector_store.reset_collection("friday_memory") # Default
+        results.append("Vector Store (ChromaDB) reset.")
+    
+    session.history = []
+    return "Persistent memory reset. " + " ".join(results)
 
 @registry.register(
     name="RunCommand",
