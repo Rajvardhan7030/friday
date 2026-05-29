@@ -1,7 +1,7 @@
 """Local LLM engine integration using Ollama."""
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union, AsyncIterator
 from .engine import LLMEngine, Message, LLMResponse
 from ..core.exceptions import LLMError
 
@@ -49,15 +49,25 @@ class LocalEngine(LLMEngine):
         self, 
         messages: List[Message], 
         tools: Optional[List[Dict[str, Any]]] = None,
-        stream: bool = False
-    ) -> LLMResponse:
+        stream: bool = False,
+        options: Optional[Dict[str, Any]] = None
+    ) -> Union[LLMResponse, AsyncIterator[LLMResponse]]:
         """Send chat completion to local Ollama."""
         formatted_messages = self._format_messages(messages)
         tried_models: List[str] = []
 
+        # 0. Try known working model first to avoid repeating timeouts/404s for missing primary
+        if self._known_chat_model:
+            try:
+                return await self._chat_with_model(self._known_chat_model, formatted_messages, tools, stream, options)
+            except Exception as e:
+                if not self._is_model_not_found_error(e):
+                    raise
+                self._known_chat_model = None
+
         # 1. Always try primary model first
         try:
-            res = await self._chat_with_model(self._primary_model, formatted_messages, tools, stream)
+            res = await self._chat_with_model(self._primary_model, formatted_messages, tools, stream, options)
             self._known_chat_model = self._primary_model
             return res
         except Exception as e:
@@ -70,7 +80,7 @@ class LocalEngine(LLMEngine):
         # 2. Try known working model if it's different and available
         if self._known_chat_model and self._known_chat_model not in tried_models:
             try:
-                return await self._chat_with_model(self._known_chat_model, formatted_messages, tools, stream)
+                return await self._chat_with_model(self._known_chat_model, formatted_messages, tools, stream, options)
             except Exception as e:
                 if not self._is_model_not_found_error(e):
                     raise
@@ -79,7 +89,7 @@ class LocalEngine(LLMEngine):
         # 3. Try configured fallback model
         if self._fallback_model and self._fallback_model not in tried_models:
             try:
-                res = await self._chat_with_model(self._fallback_model, formatted_messages, tools, stream)
+                res = await self._chat_with_model(self._fallback_model, formatted_messages, tools, stream, options)
                 self._known_chat_model = self._fallback_model
                 return res
             except Exception as e:
@@ -101,7 +111,7 @@ class LocalEngine(LLMEngine):
             for model in last_resort_models:
                 logger.info(f"Using available model '{model}' as last resort.")
                 try:
-                    res = await self._chat_with_model(model, formatted_messages, tools, stream)
+                    res = await self._chat_with_model(model, formatted_messages, tools, stream, options)
                     self._known_chat_model = model
                     return res
                 except Exception as e:
@@ -140,20 +150,12 @@ class LocalEngine(LLMEngine):
         """List models available in the local Ollama instance."""
         try:
             response = await self._client.list()
+            normalized = self._normalize_response(response)
             models = []
             
-            # Handle both object-based and dict-based responses from different library versions
-            raw_models = getattr(response, 'models', []) if hasattr(response, 'models') else response.get('models', [])
-            
+            raw_models = normalized.get('models', [])
             for m in raw_models:
-                name = None
-                if hasattr(m, 'model'): # Newer versions
-                    name = m.model
-                elif hasattr(m, 'name'): # Possible variation
-                    name = m.name
-                elif isinstance(m, dict):
-                    name = m.get('model') or m.get('name')
-                
+                name = m.get('model') or m.get('name')
                 if name:
                     models.append(name)
             return models
@@ -260,7 +262,8 @@ class LocalEngine(LLMEngine):
         formatted_messages = []
         for message in messages:
             if hasattr(message, "model_dump"):
-                formatted_messages.append(message.model_dump())
+                # Use exclude_none=True to avoid sending 'None' fields that Ollama might reject
+                formatted_messages.append(message.model_dump(exclude_none=True))
             elif isinstance(message, dict):
                 formatted_messages.append(message)
             else:
@@ -285,36 +288,86 @@ class LocalEngine(LLMEngine):
         formatted_messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]],
         stream: bool,
-    ) -> LLMResponse:
+        options: Optional[Dict[str, Any]] = None
+    ) -> Union[LLMResponse, AsyncIterator[LLMResponse]]:
+        # Sanitize options: Ollama uses 'num_predict', not 'max_tokens'
+        # Some Ollama versions might reject unknown options if they are strict
+        clean_options = None
+        if options:
+            clean_options = options.copy()
+            if "max_tokens" in clean_options:
+                if "num_predict" not in clean_options:
+                    clean_options["num_predict"] = clean_options["max_tokens"]
+                del clean_options["max_tokens"]
+
         try:
+            # Pass model and messages as positional arguments for maximum compatibility
+            # and use kwargs for optional ones
+            kwargs = {
+                "stream": stream,
+                "options": clean_options
+            }
+            if tools:
+                kwargs["tools"] = tools
+
             response = await self._client.chat(
-                model=model,
+                model,
                 messages=formatted_messages,
-                tools=tools,
-                stream=stream
+                **kwargs
             )
         except Exception as e:
             if tools and "does not support tools" in str(e).lower():
                 logger.warning(f"Model '{model}' does not support tools. Retrying without tools.")
                 response = await self._client.chat(
-                    model=model,
+                    model,
                     messages=formatted_messages,
-                    tools=None,
-                    stream=stream
+                    stream=stream,
+                    options=clean_options
                 )
             else:
                 raise
 
+        if stream:
+            return self._stream_wrapper(response, model)
+
         self._current_model = model
-        message_data = response.get('message', {})
+        normalized_response = self._normalize_response(response)
+        message_data = normalized_response.get('message', {})
         content = message_data.get('content', "")
         tool_calls = message_data.get('tool_calls', None)
-        return LLMResponse(content=content, raw_response=response, usage={}, tool_calls=tool_calls)
+        return LLMResponse(content=content, raw_response=normalized_response, usage={}, tool_calls=tool_calls)
+
+    async def _stream_wrapper(self, response_gen: AsyncIterator[Any], model: str) -> AsyncIterator[LLMResponse]:
+        """Wrap Ollama stream to yield LLMResponse chunks."""
+        self._current_model = model
+        async for chunk in response_gen:
+            normalized_chunk = self._normalize_response(chunk)
+            message_data = normalized_chunk.get('message', {})
+            content = message_data.get('content', "")
+            tool_calls = message_data.get('tool_calls', None)
+            yield LLMResponse(content=content, raw_response=normalized_chunk, tool_calls=tool_calls, is_chunk=True)
+
+    def _normalize_response(self, response: Any) -> Dict[str, Any]:
+        """Recursively convert Ollama response (dict or object) to a standard dict format."""
+        def to_dict(obj: Any) -> Any:
+            if hasattr(obj, 'model_dump'):
+                return obj.model_dump()
+            if isinstance(obj, dict):
+                return {k: to_dict(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [to_dict(v) for v in obj]
+            if hasattr(obj, '__dict__') and not str(type(obj)).startswith("<class 'httpx."):
+                return {k: to_dict(v) for k, v in obj.__dict__.items()}
+            return obj
+
+        result = to_dict(response)
+        return result if isinstance(result, dict) else {}
 
     async def _embed_with_model(self, model: str, text: str) -> List[float]:
         response = await self._client.embeddings(model=model, prompt=text)
         self._current_model = model
-        return response.get('embedding', [])
+        normalized = self._normalize_response(response)
+        return normalized.get('embedding', [])
 
     async def is_available_async(self) -> bool:
         """Non-blocking health check."""

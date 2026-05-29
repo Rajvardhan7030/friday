@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union, AsyncIterator
 from .engine import LLMEngine, Message, LLMResponse
 from ..core.exceptions import LLMError, ProviderRateLimitError
 
@@ -105,6 +105,18 @@ class APIEngine(LLMEngine):
         """Return headers and params for authentication."""
         return {"Authorization": f"Bearer {self._api_key}"}, {}
 
+    def _get_unsupported_params(self) -> List[str]:
+        """Return a list of keys that should be filtered from the payload for this provider."""
+        # By default, filter common Ollama-specific keys that might leak from AgentRouter
+        return ["num_predict", "top_k", "repeat_penalty", "num_ctx"]
+
+    def _sanitize_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove keys and transform payload to be compatible with the provider."""
+        unsupported = self._get_unsupported_params()
+        for key in unsupported:
+            payload.pop(key, None)
+        return payload
+
     @property
     def model_name(self) -> str:
         return self._model_name
@@ -122,6 +134,7 @@ class APIEngine(LLMEngine):
     )
     async def _request(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Internal helper to make requests with retries and rate limiting."""
+        payload = self._sanitize_payload(payload)
         semaphore = await self._get_semaphore()
         async with semaphore:
             # Enforce sequential rate limiting
@@ -137,8 +150,9 @@ class APIEngine(LLMEngine):
         self, 
         messages: List[Message], 
         tools: Optional[List[Dict[str, Any]]] = None,
-        stream: bool = False
-    ) -> LLMResponse:
+        stream: bool = False,
+        options: Optional[Dict[str, Any]] = None
+    ) -> Union[LLMResponse, AsyncIterator[LLMResponse]]:
         """Send chat completion to OpenAI-compatible API."""
         if stream:
             raise NotImplementedError("Streaming is not yet implemented for APIEngine.")
@@ -150,6 +164,10 @@ class APIEngine(LLMEngine):
         }
         if tools:
             payload["tools"] = tools
+        
+        # Pass through relevant options if provided
+        if options:
+            payload.update({k: v for k, v in options.items() if k not in payload})
 
         try:
             data = await self._request(url, payload)
@@ -322,17 +340,18 @@ class GeminiEngine(APIEngine):
         except Exception as e:
             raise LLMError(f"Failed to generate Gemini embeddings: {e}")
 
-    async def _request(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Override to sanitize unsupported OpenAI parameters for Gemini."""
-        # Parameters rejected by Gemini's OpenAI compatibility endpoint
-        unsupported = [
+    def _get_unsupported_params(self) -> List[str]:
+        """Parameters rejected by Gemini's OpenAI compatibility endpoint."""
+        return [
             "presence_penalty", "frequency_penalty", "logprobs", 
             "seed", "user", "store", "metadata", 
             "service_tier", "modalities", "audio",
-            "parallel_tool_calls"
+            "parallel_tool_calls", "num_predict", "top_k", "repeat_penalty", "num_ctx"
         ]
-        for key in unsupported:
-            payload.pop(key, None)
+
+    def _sanitize_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Deep sanitize for Gemini requirements."""
+        payload = super()._sanitize_payload(payload)
             
         # Deep sanitize messages for Gemini requirements
         if "messages" in payload and isinstance(payload["messages"], list):
@@ -359,8 +378,8 @@ class GeminiEngine(APIEngine):
                 if rf["json_schema"].get("strict") is True:
                     # We must set it to False or remove it
                     payload["response_format"]["json_schema"]["strict"] = False
-
-        return await super()._request(url, payload)
+        
+        return payload
 
     def _get_embedding_model(self) -> str:
         if self._embedding_model_name:

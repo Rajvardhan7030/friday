@@ -101,21 +101,24 @@ class AdaptiveRAGAgent(BaseAgent):
         query_lower = state["query"].lower().strip("?!. ")
         
         # Fast-path 1: Simple greetings
-        greetings = {"hello", "hi", "how are you", "who are you", "what is your name", "hey"}
+        greetings = {"hello", "hi", "how are you", "who are you", "what is your name", "hey", "good morning", "good evening"}
         if query_lower in greetings:
             state["needs_retrieval"] = False
             return state
             
-        # Fast-path 2: Obvious retrieval hints
-        retrieval_hints = {"my", "document", "file", "note", "remember", "saved", "search", "find", "check"}
-        if any(hint in query_lower for hint in retrieval_hints):
+        # Fast-path 2: Obvious retrieval hints (e.g. "find my resume", "search notes")
+        retrieval_hints = {
+            "my", "document", "file", "note", "remember", "saved", "search", 
+            "find", "check", "tell me about", "what is in", "where is"
+        }
+        if any(f"{hint} " in f"{query_lower} " for hint in retrieval_hints):
             state["needs_retrieval"] = True
             return state
 
-        # Fallback to LLM for ambiguous cases
+        # Fallback to LLM (using faster summarization/utility model)
         prompt = f"Analyze if this query needs looking up personal documents: \"{state['query']}\"\nRespond ONLY with JSON: {{\"needs_retrieval\": true/false}}"
         try:
-            llm = await self._get_llm()
+            llm = await self._get_llm("summarization")
             res = await llm.chat([Message(role="user", content=prompt)])
             data = self._parse_json(res.content)
             state["needs_retrieval"] = data.get("needs_retrieval", True)
@@ -128,7 +131,8 @@ class AdaptiveRAGAgent(BaseAgent):
         if not state["documents"]:
             return state
             
-        llm = await self._get_llm()
+        # Use faster summarization/utility model for grading
+        llm = await self._get_llm("summarization")
         docs_text = ""
         for i, doc in enumerate(state["documents"]):
             # Limit each chunk to 300 chars for grading to save tokens
@@ -164,7 +168,8 @@ class AdaptiveRAGAgent(BaseAgent):
     async def _transform_query(self, state: AgentState) -> AgentState:
         """Rewrites the query for better retrieval."""
         prompt = f"Rewrite this query for better document retrieval: '{state['query']}'"
-        llm = await self._get_llm()
+        # Use faster summarization/utility model for query transformation
+        llm = await self._get_llm("summarization")
         res = await llm.chat([Message(role="user", content=prompt)])
         state["query"] = res.content.strip()
         return state

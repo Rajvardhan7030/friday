@@ -166,3 +166,41 @@ async def test_gemini_incoming_multiple_tool_calls():
     assert response.tool_calls[1]["function"]["name"] == "tool_b"
     assert json.loads(response.tool_calls[1]["function"]["arguments"])["x"] == 1
     assert response.usage["total_tokens"] == 100
+
+@pytest.mark.asyncio
+async def test_gemini_ollama_options_filtering():
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"choices": [{"message": {"content": "hi", "role": "assistant"}}], "usage": {}}
+    
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    
+    engine = GeminiEngine(model_name="gemini-1.5-flash", api_key=TEST_API_KEY)
+    engine._client = mock_client
+    
+    # Payload with Ollama-specific keys in options
+    messages = [Message(role="user", content="hi")]
+    options = {
+        "num_predict": 20, 
+        "max_tokens": 20, 
+        "top_k": 40, 
+        "repeat_penalty": 1.1,
+        "num_ctx": 4096,
+        "temperature": 0.7
+    }
+    
+    await engine.chat(messages, options=options)
+    
+    args, kwargs = mock_client.post.call_args
+    sent_payload = kwargs["json"]
+    
+    # Ollama-specific should be removed
+    assert "num_predict" not in sent_payload
+    assert "top_k" not in sent_payload
+    assert "repeat_penalty" not in sent_payload
+    assert "num_ctx" not in sent_payload
+    
+    # Standard OpenAI should remain
+    assert sent_payload["max_tokens"] == 20
+    assert sent_payload["temperature"] == 0.7

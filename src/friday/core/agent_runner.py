@@ -6,7 +6,7 @@ import asyncio
 import json
 import uuid
 from importlib import import_module
-from typing import Optional, List, Dict, Any, Set
+from typing import Optional, List, Dict, Any, Set, Union, AsyncIterator
 from pathlib import Path
 
 from .registry import registry
@@ -23,8 +23,13 @@ from ..memory.document_indexer import DocumentIndexer
 from ..memory.vector_store import VectorStore
 from ..voice.tts import TTSEngine
 from ..agents.adaptive_rag import AdaptiveRAGAgent
+from ..agents.code_assistant import CodeAssistantAgent
+from ..agents.system_command_agent import SystemCommandAgent
+from ..agents.sandbox_executor import SandboxExecutor
 from ..agents.router import AgentRouter
 from ..agents.tools import LocalDocumentRetriever
+from ..skills.web_search_skill import WebSearchSkill
+from ..skills.browser_skill import BrowserSkill
 from .mcp import mcp_client
 from .observability import trace_manager
 from .permissions import PermissionManager
@@ -51,6 +56,7 @@ class Session:
         self.session_id = uuid.uuid4().hex[:8]
         self._summarize_lock = asyncio.Lock()
         self._pending_tasks: Set[asyncio.Task] = set()
+        self._pending_archival: List[Dict[str, Any]] = []
 
     async def aclose(self) -> None:
         """Wait for all pending summarization tasks to complete."""
@@ -59,7 +65,7 @@ class Session:
             await asyncio.gather(*self._pending_tasks, return_exceptions=True)
             self._pending_tasks.clear()
 
-    def add_message(self, role: str, content: Optional[str] = None, llm: Optional['LLMEngine'] = None, **kwargs):
+    def add_message(self, role: str, content: Optional[str] = None, **kwargs):
         """Add a message to the session history."""
         msg = {"role": role, "content": content}
         msg.update(kwargs)
@@ -68,13 +74,25 @@ class Session:
             overflow = len(self.history) - self.max_history_messages
             archived_messages = self.history[:overflow]
             self.history = self.history[overflow:]
+            # Buffer for later summarization to avoid resource contention during active chat
+            self._pending_archival.extend(archived_messages)
+
+    async def summarize(self, llm: Optional['LLMEngine'] = None) -> None:
+        """Process buffered messages for summarization."""
+        if not self._pending_archival:
+            return
+            
+        async with self._summarize_lock:
+            if not self._pending_archival:
+                return
+                
+            to_process = list(self._pending_archival)
+            self._pending_archival = []
+            
             if llm:
-                # Trigger semantic summarization in background and track it
-                task = asyncio.create_task(self._summarize_messages(archived_messages, llm))
-                self._pending_tasks.add(task)
-                task.add_done_callback(self._pending_tasks.discard)
+                await self._summarize_messages(to_process, llm)
             else:
-                self._append_to_summary(archived_messages)
+                self._append_to_summary(to_process)
 
     async def _summarize_messages(self, archived_messages: List[Dict[str, Any]], llm: 'LLMEngine') -> None:
         """Condense evicted messages into a structured semantic JSON summary."""
@@ -127,9 +145,17 @@ class Session:
         
         messages: List[Message] = [system_msg]
         
-        # Simple token estimation: ~4 chars per token
+        # Accurate token estimation using tiktoken
         def estimate_tokens(text: str) -> int:
-            return len(text) // 4
+            try:
+                import tiktoken
+                # Use cl100k_base (GPT-4) as a good general-purpose proxy for modern LLMs
+                # unless we specifically detect a different model family.
+                encoding = tiktoken.get_encoding("cl100k_base")
+                return len(encoding.encode(text))
+            except (ImportError, Exception):
+                # Fallback to rough heuristic if tiktoken is unavailable
+                return len(text) // 4
 
         current_tokens = estimate_tokens(system_msg.content)
 
@@ -316,9 +342,6 @@ class AgentRunner:
 
     def _load_skills(self):
         """Initialize and register skills as MCP tools."""
-        from ..skills.web_search_skill import WebSearchSkill
-        from ..skills.browser_skill import BrowserSkill
-        
         # Initialize skills
         self.skills = {
             "web_search": WebSearchSkill(),
@@ -347,15 +370,12 @@ class AgentRunner:
             self.router.register_agent(AdaptiveRAGAgent(self.model_router, retriever, config=self.config))
 
         # 2. Register Code Assistant
-        from ..agents.code_assistant import CodeAssistantAgent
-        from ..agents.sandbox_executor import SandboxExecutor
         self.router.register_agent(
             CodeAssistantAgent(self.model_router, SandboxExecutor(self.config), config=self.config)
         )
 
         # 3. Register System Command Agent
-        from ..agents.system_command_agent import SystemCommandAgent
-        self.router.register_agent(SystemCommandAgent(self.model_router, self.config, config=self.config))
+        self.router.register_agent(SystemCommandAgent(self.model_router, config=self.config))
 
         # 4. Register Research Agent from plugins
         try:
@@ -546,7 +566,7 @@ class AgentRunner:
         """Add a message to both session history and persistent storage."""
         # 1. In-memory session history
         if hasattr(self, "session"):
-            self.session.add_message(role, content, llm=getattr(self, "llm", None), **kwargs)
+            self.session.add_message(role, content, **kwargs)
         
         # 2. Persistent SQLite history
         if hasattr(self, "config") and self.config.get("memory.enabled", True):
@@ -581,12 +601,85 @@ class AgentRunner:
         doc_id = f"chat_{self.session.session_id}_{len(self.session.history)}"
         await self.vector_store.add_documents([document], [metadata], [doc_id])
 
-    async def handle_input(self, text: str) -> str:
-        """Main entry point for processing any user input."""
+    async def _try_execute_command(self, text: str) -> Optional[str]:
+        """Attempt to find and execute a deterministic command handler."""
+        handler_data = registry.find_handler(text)
+        if not handler_data:
+            return None
+
+        cmd, match = handler_data
+        logger.info(f"Executing command: {cmd.name}")
+        trace_manager.add_event("command_matched", {"command": cmd.name}, f"Matched deterministic command: {cmd.name}")
+        
+        try:
+            # Pass session and regex matches to the handler
+            result = await cmd.handler(
+                self.session,
+                *match.groups(),
+                llm=self.llm,
+                config=self.config,
+                tts=self.tts,
+                vector_store=self.vector_store,
+                conversation_memory=self.conversation_memory,
+            )
+            result_str = str(result)
+            await self._add_to_history("assistant", result_str)
+            await self._remember_exchange(text, result_str)
+            trace_manager.end_trace(result_str, success=True)
+            return result_str
+        except Exception as e:
+            logger.error(f"Command {cmd.name} failed: {e}", exc_info=True)
+            
+            # Attempt recovery for command failure
+            recovered = await recovery_manager.attempt_recovery(e, {"command": cmd.name})
+            if recovered:
+                return f"I've attempted to fix the issue: {str(e)}. Please try your command again."
+
+            error_msg = f"I encountered an error running '{cmd.name}': {str(e)}"
+            trace_manager.end_trace(error_msg, success=False)
+            return error_msg
+
+    async def _route_to_agent(self, text: str) -> Optional[str]:
+        """Classify intent and delegate to a specialized agent if appropriate."""
+        if not self.router:
+            return None
+
+        intent = "unknown"
+        try:
+            # Ask the router to classify the intent
+            intent = await self.router.detect_intent(text, self.session.history)
+            trace_manager.add_event("intent_detected", {"intent": intent}, f"Router detected intent: {intent}")
+            
+            if intent in self.router._agents:
+                logger.info(f"Routing to specialized agent: {intent}")
+                agent_result = await self.router.route_to(intent, text, self.session.history)
+                
+                self._last_tts_content = agent_result.metadata.tts_content
+                await self._add_to_history("assistant", agent_result.content)
+                await self._remember_exchange(text, agent_result.content)
+                trace_manager.end_trace(agent_result.content, success=agent_result.success)
+                return agent_result.content
+        except ProviderRateLimitError as e:
+            logger.error(f"Agent routing failed due to rate limit: {e}")
+            trace_manager.add_event("routing_failed", {"error": str(e), "type": "rate_limit"})
+            return "I'm sorry, I've hit my usage limits for the API. Please try again later."
+        except Exception as e:
+            logger.error(f"Agent routing failed: {e}")
+            
+            # Attempt recovery for agent failure
+            recovered = await recovery_manager.attempt_recovery(e, {"intent": intent})
+            if not recovered:
+                 trace_manager.add_event("routing_failed", {"error": str(e)})
+            
+        return None
+
+    async def handle_input(self, text: str) -> AsyncIterator[str]:
+        """Main entry point for processing any user input with streaming support."""
         text = text.strip()
         self._last_tts_content = None # Reset for each interaction
         if not text:
-            return "I'm listening, but I didn't hear anything."
+            yield "I'm listening, but I didn't hear anything."
+            return
 
         # Ensure primary LLM is ready
         await self._initialize_primary_llm()
@@ -594,85 +687,57 @@ class AgentRunner:
         # Start Trace
         trace_manager.start_trace(text, session_id=self.session.session_id)
 
-        # Standardized: Add user message to history immediately
-        await self._add_to_history("user", text)
+        # Start pre-fetching memory in background to reduce TTFT
+        memory_task = asyncio.create_task(self._build_memory_message(text))
 
-        # 1. Check the Command Registry (Deterministic Logic)
-        handler_data = registry.find_handler(text)
-        if handler_data:
-            cmd, match = handler_data
-            logger.info(f"Executing command: {cmd.name}")
-            trace_manager.add_event("command_matched", {"command": cmd.name}, f"Matched deterministic command: {cmd.name}")
-            try:
-                # Pass session and regex matches to the handler
-                # Some handlers might need self.llm or self.config
-                result = await cmd.handler(
-                    self.session,
-                    *match.groups(),
-                    llm=self.llm,
-                    config=self.config,
-                    tts=self.tts,
-                    vector_store=self.vector_store,
-                    conversation_memory=self.conversation_memory,
-                )
-                await self._add_to_history("assistant", str(result))
-                await self._remember_exchange(text, str(result))
-                trace_manager.end_trace(str(result), success=True)
-                return str(result)
-            except Exception as e:
-                logger.error(f"Command {cmd.name} failed: {e}", exc_info=True)
+        try:
+            # Standardized: Add user message to history immediately
+            await self._add_to_history("user", text)
+
+            # 1. Check the Command Registry (Deterministic Logic)
+            command_result = await self._try_execute_command(text)
+            if command_result:
+                memory_task.cancel() # Not needed for commands
+                yield command_result
+                return
+
+            # 2. Check for Specialized Agent Intent (AI Routing)
+            agent_result = await self._route_to_agent(text)
+            if agent_result:
+                memory_task.cancel() # Specialized agents handle their own retrieval
+                yield agent_result
+                return
+
+            # 3. Fallback to LLM if no command matches
+            trace_manager.add_event("llm_fallback_started")
+            
+            full_response = ""
+            async for chunk in self._fallback_to_llm(text, memory_task=memory_task):
+                full_response += chunk
+                yield chunk
                 
-                # Attempt recovery for command failure
-                recovered = await recovery_manager.attempt_recovery(e, {"command": cmd.name})
-                if recovered:
-                    # In a real app, we might retry the command here
-                    return f"I've attempted to fix the issue: {str(e)}. Please try your command again."
+            trace_manager.end_trace(full_response, success=True)
+        finally:
+            # Ensure memory task is cleaned up if it hasn't been used/cancelled
+            if not memory_task.done():
+                memory_task.cancel()
 
-                error_msg = f"I encountered an error running '{cmd.name}': {str(e)}"
-                trace_manager.end_trace(error_msg, success=False)
-                return error_msg
-
-        # 2. Check for Specialized Agent Intent (AI Routing)
-        if self.router:
+            # Post-interaction summarization to avoid resource contention
             try:
-                # Ask the router to classify the intent
-                intent = await self.router.detect_intent(text, self.session.history)
-                trace_manager.add_event("intent_detected", {"intent": intent}, f"Router detected intent: {intent}")
-                if intent in self.router._agents:
-                    logger.info(f"Routing to specialized agent: {intent}")
-                    agent_result = await self.router.route_to(intent, text, self.session.history)
-                    
-                    self._last_tts_content = agent_result.metadata.tts_content
-                    await self._add_to_history("assistant", agent_result.content)
-                    await self._remember_exchange(text, agent_result.content)
-                    trace_manager.end_trace(agent_result.content, success=agent_result.success)
-                    return agent_result.content
-            except ProviderRateLimitError as e:
-                logger.error(f"Agent routing failed due to rate limit: {e}")
-                trace_manager.add_event("routing_failed", {"error": str(e), "type": "rate_limit"})
-                return "I'm sorry, I've hit my usage limits for the API. Please try again later."
+                summ_llm = await self.model_router.get_engine_for_task("summarization")
+                task = asyncio.create_task(self.session.summarize(summ_llm))
+                self.session._pending_tasks.add(task)
+                task.add_done_callback(self.session._pending_tasks.discard)
             except Exception as e:
-                logger.error(f"Agent routing failed: {e}")
-                
-                # Attempt recovery for agent failure
-                recovered = await recovery_manager.attempt_recovery(e, {"intent": intent if 'intent' in locals() else "unknown"})
-                if not recovered:
-                     trace_manager.add_event("routing_failed", {"error": str(e)})
-                # Fall through to general chat on router failure
-
-        # 3. Fallback to LLM if no command matches
-        trace_manager.add_event("llm_fallback_started")
-        response = await self._fallback_to_llm(text)
-        trace_manager.end_trace(response, success=True)
-        return response
+                logger.warning(f"Failed to trigger summarization: {e}")
 
     @property
     def last_tts_content(self) -> Optional[str]:
         """Returns the voice-friendly summary of the last agent response, if any."""
         return getattr(self, "_last_tts_content", None)
 
-    async def _fallback_to_llm(self, text: str) -> str:
-        """Use the local LLM when no specific command is triggered, with MCP tool support."""
+    async def _fallback_to_llm(self, text: str, memory_task: Optional[asyncio.Task] = None) -> AsyncIterator[str]:
+        """Use the local LLM when no specific command is triggered, with streaming support."""
         # Ensure MCP servers are started
         await self._ensure_mcp_ready()
         
@@ -680,12 +745,24 @@ class AgentRunner:
         if self.llm is None or not self.llm.is_available():
             engine_type = self.config.get("llm.engine", "ollama")
             if engine_type == "openai":
-                return "The API engine is unavailable. Please check your API key in config.yaml."
-            return "The local LLM engine is unavailable. Install the required dependencies and start Ollama to enable free-form chat."
+                yield "The API engine is unavailable. Please check your API key in config.yaml."
+                return
+            yield "The local LLM engine is unavailable. Install the required dependencies and start Ollama to enable free-form chat."
+            return
         
         # Build chat history for LLM
         messages = self.session.build_llm_messages()
-        memory_message = await self._build_memory_message(text)
+        
+        # Await the pre-fetched memory task or trigger it now if missing
+        if memory_task:
+            try:
+                memory_message = await memory_task
+            except Exception as e:
+                logger.warning(f"Background memory retrieval failed: {e}")
+                memory_message = None
+        else:
+            memory_message = await self._build_memory_message(text)
+            
         if memory_message is not None:
             insert_at = 1 if messages and messages[0].role == "system" else 0
             messages.insert(insert_at, memory_message)
@@ -693,40 +770,56 @@ class AgentRunner:
         tools = mcp_client.get_tools_for_llm() or None
             
         try:
-            return await self._run_react_loop(text, messages, tools)
+            async for chunk in self._run_react_loop(text, messages, tools, stream=True):
+                yield chunk
         except ProviderRateLimitError as e:
             logger.error(f"Rate limit exceeded: {e}")
-            return "I'm sorry, I've hit my usage limits for the API. Please try again later."
+            yield "I'm sorry, I've hit my usage limits for the API. Please try again later."
         except Exception as e:
             logger.error(f"LLM fallback failed: {e}")
-            return f"I'm sorry, my brain is feeling a bit foggy: {str(e)}"
+            yield f"I'm sorry, my brain is feeling a bit foggy: {str(e)}"
 
-    async def _run_react_loop(self, original_text: str, messages: List[Message], tools: Optional[List[Dict[str, Any]]]) -> str:
-        """Executes the iterative tool-calling loop."""
+    async def _run_react_loop(self, original_text: str, messages: List[Message], tools: Optional[List[Dict[str, Any]]], stream: bool = False) -> AsyncIterator[str]:
+        """Executes the iterative tool-calling loop with optional streaming."""
         max_iterations = 5
         
         for _ in range(max_iterations):
-            response = await self.llm.chat(messages, tools=tools)
+            response = await self.llm.chat(messages, tools=tools, stream=stream)
             
-            if not response.tool_calls:
-                # Final answer
-                await self._add_to_history("assistant", response.content)
-                await self._remember_exchange(original_text, response.content)
-                return response.content
+            if not isinstance(response, AsyncIterator):
+                # Non-streaming (either stream=False or it's a tool call)
+                if not response.tool_calls:
+                    # Final answer (non-streaming)
+                    await self._add_to_history("assistant", response.content)
+                    await self._remember_exchange(original_text, response.content)
+                    yield response.content
+                    return
 
-            # Handle tool calls
-            assistant_msg = Message(role="assistant", content=response.content, tool_calls=response.tool_calls)
-            messages.append(assistant_msg)
-            await self._add_to_history(**assistant_msg.model_dump(exclude_none=True))
-            
-            # Execute tools
-            tool_executor = ToolExecutor(mcp_client, permission_manager=self.permission_manager)
-            tool_results = await tool_executor.execute_tool_calls(response.tool_calls)
-            
-            for tool_msg in tool_results:
-                messages.append(tool_msg)
-                await self._add_to_history(**tool_msg.model_dump(exclude_none=True))
+                # Handle tool calls
+                assistant_msg = Message(role="assistant", content=response.content, tool_calls=response.tool_calls)
+                messages.append(assistant_msg)
+                await self._add_to_history(**assistant_msg.model_dump(exclude_none=True))
+                
+                # Execute tools
+                tool_executor = ToolExecutor(mcp_client, permission_manager=self.permission_manager)
+                tool_results = await tool_executor.execute_tool_calls(response.tool_calls)
+                
+                for tool_msg in tool_results:
+                    messages.append(tool_msg)
+                    await self._add_to_history(**tool_msg.model_dump(exclude_none=True))
+                # Continue loop to next iteration
+            else:
+                # Streaming final answer
+                full_content = ""
+                async for chunk in response:
+                    if chunk.content:
+                        full_content += chunk.content
+                        yield chunk.content
+                
+                await self._add_to_history("assistant", full_content)
+                await self._remember_exchange(original_text, full_content)
+                return
         
         final_msg = "I've reached my thinking limit on this task."
         await self._add_to_history("assistant", final_msg)
-        return final_msg
+        yield final_msg

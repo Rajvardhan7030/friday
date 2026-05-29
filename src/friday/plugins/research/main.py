@@ -1,7 +1,7 @@
 """Research Agent with ReAct loop and citations."""
 
 import logging
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Optional, Any
 from friday.agents.base import BaseAgent, Context, AgentResult, AgentMetadata
 from friday.llm.engine import LLMEngine, Message
 from friday.skills.web_search_skill import WebSearchSkill
@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 class ResearchAgent(BaseAgent):
     """Multi-hop research agent with citations and ReAct loop."""
 
-    def __init__(self, llm_engine: Union[LLMEngine, 'ModelRouter'], vector_store: VectorStore, max_iterations: int = 5):
-        super().__init__(llm_engine)
+    def __init__(self, llm_engine: Union[LLMEngine, 'ModelRouter'], vector_store: VectorStore, max_iterations: int = 5, config: Optional[Any] = None):
+        super().__init__(llm_engine, config=config)
         self.vector_store = vector_store
         self.web_search = WebSearchSkill()
         self.max_iterations = max_iterations

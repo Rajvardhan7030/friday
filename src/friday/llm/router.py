@@ -46,6 +46,21 @@ class ModelRouter:
                 api_base_url=self.config.get("llm.api_base_url") if engine_type == "openai" else None,
                 embedding_model=self.config.get("llm.embedding_model")
             )
+            
+            # Specialized route for summarization to avoid heavy model usage
+            summ_primary = self.config.get("llm.summarization_model")
+            if summ_primary and summ_primary != primary:
+                summ_route = ModelRoute(
+                    primary=summ_primary,
+                    fallback=primary,
+                    provider=provider,
+                    api_base_url=default_route.api_base_url
+                )
+                return ModelPolicy(routes={
+                    "default": default_route,
+                    "summarization": summ_route
+                })
+            
             return ModelPolicy(routes={"default": default_route})
         
         return ModelPolicy.model_validate(raw_policy)

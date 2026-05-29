@@ -1,7 +1,7 @@
 """LLM Engine abstraction layer."""
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional, AsyncIterator
+from typing import List, Dict, Any, Optional, AsyncIterator, Union
 from pydantic import BaseModel, Field
 
 class Message(BaseModel):
@@ -16,6 +16,7 @@ class LLMResponse(BaseModel):
     raw_response: Any = None
     usage: Dict[str, Any] = Field(default_factory=dict)
     tool_calls: Optional[List[Dict[str, Any]]] = None
+    is_chunk: bool = False
 
 class LLMEngine(ABC):
     """Abstract Base Class for LLM Engines."""
@@ -25,8 +26,9 @@ class LLMEngine(ABC):
         self, 
         messages: List[Message], 
         tools: Optional[List[Dict[str, Any]]] = None,
-        stream: bool = False
-    ) -> LLMResponse:
+        stream: bool = False,
+        options: Optional[Dict[str, Any]] = None
+    ) -> Union[LLMResponse, AsyncIterator[LLMResponse]]:
         """Send a chat completion request."""
         pass
 

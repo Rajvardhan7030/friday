@@ -91,13 +91,15 @@ class FridayCLI:
                     continue
 
                 # Process through the Runner
-                response = await self.runner.handle_input(user_input)
-                
-                # Output to console and voice
-                console.print(f"\n[bold green]Friday:[/bold green] {response}\n")
+                console.print("\n[bold green]Friday:[/bold green] ", end="")
+                full_response = ""
+                async for chunk in self.runner.handle_input(user_input):
+                    console.print(chunk, end="")
+                    full_response += chunk
+                console.print("\n")
                 
                 # Use agent-provided TTS content if available, otherwise use the full response
-                tts_text = self.runner.last_tts_content or response
+                tts_text = self.runner.last_tts_content or full_response
                 await self.speak(tts_text)
 
             except KeyboardInterrupt:
@@ -772,11 +774,16 @@ async def ask_mode(args: list[str], voice_output_enabled: bool = False):
         console.print("[bold yellow]No question provided.[/bold yellow]")
         return
 
-    response = await cli.runner.handle_input(prompt)
-    console.print(f"\n[bold green]Friday:[/bold green] {response}\n")
+    response_stream = cli.runner.handle_input(prompt)
+    console.print("\n[bold green]Friday:[/bold green] ", end="")
+    full_response = ""
+    async for chunk in response_stream:
+        console.print(chunk, end="")
+        full_response += chunk
+    console.print("\n")
     
     # Use agent-provided TTS content if available, otherwise use the full response
-    tts_text = cli.runner.last_tts_content or response
+    tts_text = cli.runner.last_tts_content or full_response
     await cli.speak(tts_text, block=True)
 
 def app():

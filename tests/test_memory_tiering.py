@@ -57,7 +57,8 @@ async def test_memory_tiering(tmp_path):
         assert runner.llm == mock_llm
 
     # 4. Simulate conversation
-    await runner.handle_input("I really love pizza and I work as a coder.")
+    async for _ in runner.handle_input("I really love pizza and I work as a coder."):
+        pass
     # Check if messages were added to STM (SQLite)
     assert runner.conversation_memory is not None
     history = await runner.conversation_memory.get_history(runner.session.session_id)

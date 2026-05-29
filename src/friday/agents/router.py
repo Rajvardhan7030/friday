@@ -77,6 +77,12 @@ class AgentRouter:
         """
         Use the LLM to classify the user's intent based on agent descriptions.
         """
+        # 1. Fast path: Detect greetings or identity questions without LLM
+        fast_path = self._detect_fast_path_intent(query)
+        if fast_path:
+            return fast_path
+
+        # 2. LLM-based classification
         agent_descriptions = "\n".join([
             f"- {name}: {agent.description}" 
             for name, agent in self._agents.items()
@@ -104,13 +110,25 @@ Respond ONLY with JSON: {{"agent": "category_name"}}
         
         try:
             llm = await self._get_llm("general_chat")
-            response = await llm.chat(messages)
+            # Limit response length for classification (num_predict is Ollama-specific, max_tokens for OpenAI)
+            options = {"num_predict": 20, "max_tokens": 20, "temperature": 0.0}
+            response = await llm.chat(messages, options=options)
             data = self._parse_json(response.content)
             return data.get("agent", "general_chat")
         except Exception as e:
             logger.error(f"Intent detection failed: {e}")
             
         return "general_chat"
+
+    def _detect_fast_path_intent(self, query: str) -> Optional[str]:
+        """Detect intent using simple regex patterns to avoid LLM calls."""
+        import re
+        greetings_regex = r"^(?:hi+|hello+|hey+|greetings|good (?:morning|evening)|morning|evening)(?:\s+friday)?[!.?]*$"
+        identity_regex = r"^(?:who (?:are|r) (?:you|u)|what(?:'s| is) your name|your name)[?.!]*$"
+        
+        if re.search(greetings_regex, query, re.IGNORECASE) or re.search(identity_regex, query, re.IGNORECASE):
+            return "general_chat"
+        return None
 
     def _parse_json(self, text: str) -> Dict[str, Any]:
         """Robustly extract JSON from potentially messy LLM output."""

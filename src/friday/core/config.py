@@ -145,6 +145,7 @@ class Config:
                 "engine": "ollama",  # "ollama" or "openai"
                 "primary_model": "mistral:latest",
                 "fallback_model": "llama3:latest",
+                "summarization_model": "tinyllama:latest",
                 "embedding_model": "nomic-embed-text:latest",
                 "base_url": "http://localhost:11434",
                 "api_key": "",
