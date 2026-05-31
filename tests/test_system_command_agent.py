@@ -12,6 +12,7 @@ from friday.llm.engine import Message
 def mock_llm():
     llm = MagicMock()
     llm.chat = AsyncMock()
+    del llm.get_engine_for_task  # Prevent it from being mistakenly identified as a ModelRouter
     return llm
 
 @pytest.fixture
@@ -51,7 +52,7 @@ async def test_system_command_agent_safety_block(mock_llm, config):
     result = await agent.run(ctx)
     
     assert result.success is False
-    assert "Safety Block" in result.content
+    assert "rejected for security reasons" in result.content
 
 @pytest.mark.asyncio
 async def test_system_command_agent_user_denial(mock_llm, config):

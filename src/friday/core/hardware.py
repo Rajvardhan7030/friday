@@ -94,7 +94,33 @@ async def get_hardware_profile() -> HardwareProfile:
                 gpu_vram_gb = gpu.memoryTotal / 1024
                 gpu_name = gpu.name
         except Exception as e:
-            logger.warning(f"Failed to detect GPU: {e}")
+            logger.warning(f"Failed to detect GPU via GPUtil: {e}")
+
+    # Fallback for older/unsupported GPUs via nvidia-smi -L (Linux/Windows)
+    if not gpu_name and platform.system() != "Darwin":
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "nvidia-smi", "-L",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await proc.communicate()
+            if stdout:
+                # Format: "GPU 0: NVIDIA GeForce GT 710 (UUID: GPU-...)"
+                line = stdout.decode().split("\n")[0]
+                if ":" in line:
+                    gpu_name = line.split(":")[1].split("(")[0].strip()
+                    # Try to get VRAM via another query if possible
+                    proc_v = await asyncio.create_subprocess_exec(
+                        "nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    stdout_v, _ = await proc_v.communicate()
+                    if stdout_v:
+                        gpu_vram_gb = float(stdout_v.decode().strip()) / 1024
+        except Exception as e:
+            logger.debug(f"NVIDIA fallback detection failed: {e}")
 
     # Fallback/Additional detection for macOS (Apple Silicon)
     if platform.system() == "Darwin" and not gpu_name:

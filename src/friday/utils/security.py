@@ -104,6 +104,12 @@ def validate_shell_command(command: str, config: Optional[Config] = None) -> Tup
     """
     Checks if a shell command is safe to execute based on blocklists and config.
     """
+    # 0. Check for command substitution and process substitution
+    if "$(" in command or "`" in command:
+        return False, "Command substitution ($() or ``) is prohibited for security reasons."
+    if "<(" in command or ">(" in command:
+        return False, "Process substitution (<() or >()) is prohibited for security reasons."
+
     # 1. Basic Sudo check
     cmd_lower = command.lower()
     allow_sudo = config.get("security.shell_command_allow_sudo", False) if config else False
@@ -111,8 +117,8 @@ def validate_shell_command(command: str, config: Optional[Config] = None) -> Tup
         return False, "Sudo commands are disabled in configuration."
 
     # 2. Split and validate sub-commands (prevents bypasses like 'ls; rm -rf /')
-    # We split by common shell separators: ;, &&, ||, |, and also backticks/subshells
-    parts = re.split(r';|&&|\|\||\||`|\$\(', command)
+    # We split by common shell separators: ;, &&, ||, |
+    parts = re.split(r';|&&|\|\||\|', command)
     
     for part in parts:
         part = part.strip().lower()
@@ -124,13 +130,24 @@ def validate_shell_command(command: str, config: Optional[Config] = None) -> Tup
                 return False, f"Dangerous command pattern detected: {pattern}"
 
         # 2.5 Forbidden Binaries Check
-        forbidden_binaries = {"sh", "bash", "zsh", "ksh", "dash", "nc", "netcat", "curl", "wget"}
-        words = part.split()
-        if words:
-            # Get the binary name (handle paths like /usr/bin/sh)
-            binary = words[0].split('/')[-1]
-            if binary in forbidden_binaries:
-                return False, f"Forbidden binary detected: {binary}"
+        forbidden_binaries = {"sh", "bash", "zsh", "ksh", "dash", "nc", "netcat", "curl", "wget", "python", "python3", "perl", "ruby", "lua"}
+        
+        import shlex
+        try:
+            # shlex.split helps correctly identify tokens even with quotes
+            tokens = shlex.split(part)
+            for token in tokens:
+                # Get the binary name (handle paths like /usr/bin/sh)
+                binary = token.split('/')[-1]
+                if binary in forbidden_binaries:
+                    return False, f"Forbidden binary detected: {binary}"
+        except ValueError:
+            # shlex might fail on unbalanced quotes, fallback to simple split
+            words = part.split()
+            for word in words:
+                binary = word.split('/')[-1]
+                if binary in forbidden_binaries:
+                    return False, f"Forbidden binary detected: {binary}"
 
         # 3. Configurable Blocklist
         if config:

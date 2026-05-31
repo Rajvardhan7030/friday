@@ -2,9 +2,10 @@
 
 import asyncio
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+import json
+from typing import List, Dict, Any, Optional, Tuple, Union, AsyncIterator
 from .engine import LLMEngine, Message, LLMResponse
-from ..core.exceptions import LLMError
+from ..core.exceptions import LLMError, ProviderRateLimitError
 
 try:
     import httpx
@@ -28,7 +29,12 @@ def _is_retryable_api_error(e: Exception) -> bool:
     """Check if the error is a transient API error that should be retried."""
     if isinstance(e, httpx.HTTPStatusError):
         # Retry on Rate Limit (429) or Server Errors (5xx)
-        return e.response.status_code == 429 or e.response.status_code >= 500
+        if e.response.status_code == 429:
+            # If it's a quota exhausted error, retrying won't help
+            if "quota" in e.response.text.lower() or "exhausted" in e.response.text.lower():
+                return False
+            return True
+        return e.response.status_code >= 500
     if isinstance(e, (httpx.ConnectError, httpx.TimeoutException, httpx.ReadTimeout, httpx.WriteTimeout)):
         # Retry on connection issues or timeouts
         return True
@@ -100,6 +106,18 @@ class APIEngine(LLMEngine):
         """Return headers and params for authentication."""
         return {"Authorization": f"Bearer {self._api_key}"}, {}
 
+    def _get_unsupported_params(self) -> List[str]:
+        """Return a list of keys that should be filtered from the payload for this provider."""
+        # By default, filter common Ollama-specific keys that might leak from AgentRouter
+        return ["num_predict", "top_k", "repeat_penalty", "num_ctx"]
+
+    def _sanitize_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove keys and transform payload to be compatible with the provider."""
+        unsupported = self._get_unsupported_params()
+        for key in unsupported:
+            payload.pop(key, None)
+        return payload
+
     @property
     def model_name(self) -> str:
         return self._model_name
@@ -110,13 +128,14 @@ class APIEngine(LLMEngine):
 
     @retry(
         reraise=True,
-        stop=stop_after_attempt(10), # Be more patient
-        wait=wait_exponential(multiplier=2, min=5, max=120), # Slower backoff for rate limits
+        stop=stop_after_attempt(3), # Stop sooner to avoid long hangs
+        wait=wait_exponential(multiplier=2, min=2, max=10), # Faster backoff for rate limits
         retry=retry_if_exception(_is_retryable_api_error),
         before_sleep=before_sleep_log(logger, logging.WARNING)
     )
     async def _request(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Internal helper to make requests with retries and rate limiting."""
+        payload = self._sanitize_payload(payload)
         semaphore = await self._get_semaphore()
         async with semaphore:
             # Enforce sequential rate limiting
@@ -132,19 +151,25 @@ class APIEngine(LLMEngine):
         self, 
         messages: List[Message], 
         tools: Optional[List[Dict[str, Any]]] = None,
-        stream: bool = False
-    ) -> LLMResponse:
+        stream: bool = False,
+        options: Optional[Dict[str, Any]] = None
+    ) -> Union[LLMResponse, AsyncIterator[LLMResponse]]:
         """Send chat completion to OpenAI-compatible API."""
-        if stream:
-            raise NotImplementedError("Streaming is not yet implemented for APIEngine.")
-
         url = "chat/completions"
         payload = {
             "model": self._model_name,
             "messages": [m.model_dump(exclude_none=True) for m in messages],
+            "stream": stream
         }
         if tools:
             payload["tools"] = tools
+        
+        # Pass through relevant options if provided
+        if options:
+            payload.update({k: v for k, v in options.items() if k not in payload})
+
+        if stream:
+            return self._stream_chat(url, payload)
 
         try:
             data = await self._request(url, payload)
@@ -163,11 +188,58 @@ class APIEngine(LLMEngine):
                 tool_calls=tool_calls
             )
         except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                raise ProviderRateLimitError(f"Rate limit exceeded for provider {self._provider}. {self._format_http_error(e)}")
             if e.response.status_code in (401, 403):
                 raise LLMError(f"Authentication failed (401/403). Please check your API key in config.yaml.") from e
             raise LLMError(f"API LLM engine failed: {self._format_http_error(e)}")
         except Exception as e:
             raise LLMError(f"API LLM engine failed: {e}")
+
+    async def _stream_chat(self, url: str, payload: Dict[str, Any]) -> AsyncIterator[LLMResponse]:
+        """Internal helper for streaming chat completions."""
+        payload = self._sanitize_payload(payload)
+        semaphore = await self._get_semaphore()
+        
+        async with semaphore:
+            await self._apply_rate_limit()
+            url = url.lstrip("/")
+            
+            try:
+                async with self._client.stream("POST", url, json=payload) as response:
+                    response.raise_for_status()
+                    
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        
+                        data_str = line[6:].strip()
+                        if data_str == "[DONE]":
+                            break
+                        
+                        try:
+                            data = json.loads(data_str)
+                            if not data.get("choices"):
+                                continue
+                            
+                            choice = data["choices"][0]
+                            delta = choice.get("delta", {})
+                            content = delta.get("content", "")
+                            tool_calls = delta.get("tool_calls")
+                            
+                            yield LLMResponse(
+                                content=content or "",
+                                raw_response=data,
+                                tool_calls=tool_calls
+                            )
+                        except json.JSONDecodeError:
+                            continue
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    raise ProviderRateLimitError(f"Rate limit exceeded for provider {self._provider}. {self._format_http_error(e)}")
+                raise LLMError(f"Streaming API call failed: {self._format_http_error(e)}")
+            except Exception as e:
+                raise LLMError(f"Streaming API call failed: {e}")
 
     async def embed(self, text: str) -> List[float]:
         """Generate embeddings using OpenAI-compatible API."""
@@ -218,8 +290,25 @@ class APIEngine(LLMEngine):
         return [item["embedding"] for item in items]
 
     def _format_http_error(self, error: "httpx.HTTPStatusError") -> str:
-        """Include provider error body; 400s are otherwise impossible to diagnose."""
+        """Include provider error body; try to extract a clean message, else truncate."""
         body = error.response.text.strip()
+        try:
+            import json
+            data = json.loads(body)
+            # Handle list of errors (e.g. Gemini sometimes returns a list)
+            if isinstance(data, list) and len(data) > 0:
+                data = data[0]
+            if isinstance(data, dict) and "error" in data:
+                err = data["error"]
+                if isinstance(err, dict) and "message" in err:
+                    return f"{error}; {err['message']}"
+                elif isinstance(err, str):
+                    return f"{error}; {err}"
+            elif isinstance(data, dict) and "message" in data:
+                return f"{error}; {data['message']}"
+        except Exception:
+            pass
+
         if len(body) > 1000:
             body = body[:1000] + "..."
         return f"{error}; response body: {body}" if body else str(error)
@@ -298,17 +387,18 @@ class GeminiEngine(APIEngine):
         except Exception as e:
             raise LLMError(f"Failed to generate Gemini embeddings: {e}")
 
-    async def _request(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Override to sanitize unsupported OpenAI parameters for Gemini."""
-        # Parameters rejected by Gemini's OpenAI compatibility endpoint
-        unsupported = [
+    def _get_unsupported_params(self) -> List[str]:
+        """Parameters rejected by Gemini's OpenAI compatibility endpoint."""
+        return [
             "presence_penalty", "frequency_penalty", "logprobs", 
             "seed", "user", "store", "metadata", 
             "service_tier", "modalities", "audio",
-            "parallel_tool_calls"
+            "parallel_tool_calls", "num_predict", "top_k", "repeat_penalty", "num_ctx"
         ]
-        for key in unsupported:
-            payload.pop(key, None)
+
+    def _sanitize_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Deep sanitize for Gemini requirements."""
+        payload = super()._sanitize_payload(payload)
             
         # Deep sanitize messages for Gemini requirements
         if "messages" in payload and isinstance(payload["messages"], list):
@@ -335,8 +425,8 @@ class GeminiEngine(APIEngine):
                 if rf["json_schema"].get("strict") is True:
                     # We must set it to False or remove it
                     payload["response_format"]["json_schema"]["strict"] = False
-
-        return await super()._request(url, payload)
+        
+        return payload
 
     def _get_embedding_model(self) -> str:
         if self._embedding_model_name:

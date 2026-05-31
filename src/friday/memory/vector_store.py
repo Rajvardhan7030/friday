@@ -5,6 +5,7 @@ import uuid
 import asyncio
 from typing import List, Dict, Any, Optional
 from ..llm.engine import LLMEngine
+from ..core.exceptions import MemoryInitializationError
 
 try:
     import chromadb
@@ -30,23 +31,26 @@ class VectorStore:
     async def initialize(self, collection_name: Optional[str] = None) -> None:
         """Explicitly initialize the ChromaDB client and collection."""
         if chromadb is None or Settings is None:
-            raise RuntimeError("The 'chromadb' package is not installed. Install project dependencies to use vector storage.")
+            raise MemoryInitializationError("The 'chromadb' package is not installed. Install project dependencies to use vector storage.")
         
         async with self._lock:
-            if self.client is None:
-                self.client = chromadb.PersistentClient(
-                    path=self.persist_directory,
-                    settings=Settings(allow_reset=True)
-                )
-            
-            name = collection_name or self.default_collection
-            if name not in self._collections:
-                self._collections[name] = self.client.get_or_create_collection(
-                    name=name,
-                    metadata={"hnsw:space": "cosine"}
-                )
-            
-            self.collection = self._collections[name]
+            try:
+                if self.client is None:
+                    self.client = chromadb.PersistentClient(
+                        path=self.persist_directory,
+                        settings=Settings(allow_reset=True)
+                    )
+                
+                name = collection_name or self.default_collection
+                if name not in self._collections:
+                    self._collections[name] = self.client.get_or_create_collection(
+                        name=name,
+                        metadata={"hnsw:space": "cosine"}
+                    )
+                
+                self.collection = self._collections[name]
+            except Exception as e:
+                raise MemoryInitializationError(f"Failed to initialize ChromaDB: {e}")
         logger.info(f"VectorStore collection '{name}' initialized at {self.persist_directory}")
 
     async def get_collection(self, name: str) -> Any:
@@ -152,15 +156,27 @@ class VectorStore:
             return []
 
     async def reset_collection(self, collection_name: str) -> None:
-        """Delete and recreate a collection."""
+        """Rename and recreate a collection to avoid data loss on mismatch."""
         async with self._lock:
             if self.client:
                 try:
-                    self.client.delete_collection(collection_name)
+                    import datetime
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    backup_name = f"{collection_name}_backup_{timestamp}"
+                    
+                    try:
+                        # Attempt to rename existing collection
+                        collection = self.client.get_collection(collection_name)
+                        collection.modify(name=backup_name)
+                        logger.info(f"Collection '{collection_name}' renamed to '{backup_name}' for backup.")
+                    except Exception as e:
+                        logger.warning(f"Could not rename collection '{collection_name}' to '{backup_name}': {e}. Deleting instead.")
+                        self.client.delete_collection(collection_name)
+
                     if collection_name in self._collections:
                         del self._collections[collection_name]
                     
-                    # Re-create
+                    # Re-create the original collection
                     self._collections[collection_name] = self.client.create_collection(
                         name=collection_name,
                         metadata={"hnsw:space": "cosine"}
@@ -168,6 +184,6 @@ class VectorStore:
                     if not self.default_collection or collection_name == self.default_collection:
                         self.collection = self._collections[collection_name]
                     
-                    logger.info(f"Collection '{collection_name}' has been reset.")
+                    logger.info(f"Collection '{collection_name}' has been reset with new dimension compatibility.")
                 except Exception as e:
                     logger.error(f"Failed to reset collection '{collection_name}': {e}")

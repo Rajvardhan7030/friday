@@ -52,8 +52,36 @@ def scan_hardware() -> DetailedHardwareProfile:
                 gpu = max(gpus, key=lambda x: x.memoryTotal)
                 gpu_vram_gb = gpu.memoryTotal / 1024
                 gpu_name = gpu.name
-        except (subprocess.TimeoutExpired, Exception):
-            pass
+        except (subprocess.TimeoutExpired, Exception) as e:
+            logger.warning(f"Failed to detect GPU via GPUtil: {e}")
+
+    # Fallback for older/unsupported GPUs via nvidia-smi -L (Linux/Windows)
+    if not gpu_name and platform.system() != "Darwin":
+        try:
+            res = subprocess.run(
+                ["nvidia-smi", "-L"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5.0
+            )
+            if res.stdout:
+                # Format: "GPU 0: NVIDIA GeForce GT 710 (UUID: GPU-...)"
+                line = res.stdout.split("\n")[0]
+                if ":" in line:
+                    gpu_name = line.split(":")[1].split("(")[0].strip()
+                    # Try to get VRAM
+                    res_v = subprocess.run(
+                        ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        timeout=5.0
+                    )
+                    if res_v.stdout:
+                        gpu_vram_gb = float(res_v.stdout.strip()) / 1024
+        except Exception as e:
+            logger.debug(f"NVIDIA fallback detection failed: {e}")
 
     # Fallback/Additional detection for macOS (Apple Silicon)
     if platform.system() == "Darwin" and not gpu_name:

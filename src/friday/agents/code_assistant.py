@@ -5,163 +5,151 @@ Implements a LangGraph-inspired state machine with planning, syntax validation, 
 
 import logging
 import re
-from typing import Dict, Any, List, Optional, TypedDict
-from .base import BaseAgent, Context, AgentResult
+from typing import Dict, Any, List, Optional, TypedDict, Union
+
+from .base import BaseAgent, Context, AgentResult, AgentMetadata
 from ..llm.engine import LLMEngine, Message
 from .sandbox_executor import SandboxExecutor
 
 logger = logging.getLogger(__name__)
 
 class CodeState(TypedDict):
-    """State for the Code Assistant workflow."""
+    """Internal state for the code assistant workflow."""
     task: str
-    plan: str
-    code: str
-    success: bool
-    output: str
+    plan: Optional[str]
+    code: Optional[str]
+    output: Optional[str]
+    error: Optional[str]
     retries: int
     max_retries: int
-    error: Optional[str]
-    history: List[Dict[str, str]]
+    success: bool
 
 class CodeAssistantAgent(BaseAgent):
     """
-    A robust coding agent that plans, writes, tests, and debugs code locally.
+    Autonomous coding agent that plans, writes, and executes Python code in a sandbox.
     """
 
-    def __init__(self, llm_engine: LLMEngine, executor: Optional[SandboxExecutor] = None):
-        super().__init__(llm_engine)
-        self.executor = executor or SandboxExecutor()
+    def __init__(
+        self, 
+        llm_engine: Union[LLMEngine, 'ModelRouter'], 
+        sandbox: SandboxExecutor,
+        max_retries: int = 3,
+        config: Optional[Any] = None
+    ):
+        super().__init__(llm_engine, config=config)
+        self.sandbox = sandbox
+        self.max_retries = max_retries
 
     @property
-    def name(self) -> str: return "code_assistant"
+    def name(self) -> str:
+        return "code_assistant"
 
     @property
     def description(self) -> str:
-        return "Expert Python developer that writes and executes code to solve tasks in a secure sandbox."
+        return "Autonomous Python coder that creates and runs scripts in a secure sandbox."
 
     async def run(self, ctx: Context) -> AgentResult:
-        """Execute the multi-step coding workflow."""
+        """Execute the coding workflow."""
         state: CodeState = {
             "task": ctx.user_query,
-            "plan": "",
-            "code": "",
-            "success": False,
-            "output": "",
-            "retries": 0,
-            "max_retries": 3,
+            "plan": None,
+            "code": None,
+            "output": None,
             "error": None,
-            "history": ctx.chat_history or []
+            "retries": 0,
+            "max_retries": self.max_retries,
+            "success": False
         }
 
-        # Step 1: Plan
-        state = await self._plan(state)
-        
+        # Workflow Loop
         while state["retries"] < state["max_retries"]:
-            # Step 2: Generate
+            # 1. Plan
+            if not state["plan"]:
+                state = await self._plan(state)
+            
+            # 2. Generate Code
             state = await self._generate_code(state)
             
-            # Step 3: Validate Syntax (Static Analysis)
-            valid, msg = self.executor.validate_syntax(state["code"])
-            if not valid:
-                state["error"] = f"Syntax/Safety Error: {msg}"
-                state["retries"] += 1
-                continue
-
-            # Step 4: Execute in Sandbox
-            success, output = await self.executor.execute(state["code"])
-            state["success"] = success
-            state["output"] = output
-
-            # Step 5: Analyze Output
-            if success:
+            # 3. Execute in Sandbox
+            state = await self._execute(state)
+            
+            if state["success"]:
                 break
             else:
+                # 4. Debug/Retry
                 state = await self._debug(state)
                 state["retries"] += 1
 
         return self._format_result(state)
 
     async def _plan(self, state: CodeState) -> CodeState:
-        messages = [
-            Message(role=m["role"], content=m["content"]) 
-            for m in state["history"][-6:]
-        ]
-        messages.append(Message(
-            role="user", 
-            content=f"Break this task into steps for a Python script: {state['task']}\nRespond with pseudocode steps."
-        ))
-        
-        res = await self.llm.chat(messages)
+        """Creates a step-by-step plan for the coding task."""
+        prompt = f"Create a step-by-step technical plan to solve this task: {state['task']}"
+        llm = await self._get_llm()
+        res = await llm.chat([Message(role="user", content=prompt)])
         state["plan"] = res.content
+        logger.info(f"Plan generated for task: {state['task']}")
         return state
 
     async def _generate_code(self, state: CodeState) -> CodeState:
-        messages = [
-            Message(role=m["role"], content=m["content"]) 
-            for m in state["history"][-6:]
-        ]
-        
-        prompt = f"""Write a Python script based on this plan:
-{state['plan']}
+        """Writes the Python code based on the plan and any previous errors."""
+        error_context = f"\nPrevious Error: {state['error']}" if state["error"] else ""
+        prompt = f"""
+Write a complete, single-file Python script to solve this task: {state['task']}
+Plan: {state['plan']}
+{error_context}
 
-Constraints:
-- Only use allowed imports: os, pathlib, json, csv, datetime, re, math, random, string, shutil
-- Files can only be written to current directory (sandbox).
-- Task: {state['task']}
-
-Respond ONLY with the code wrapped in ```python blocks."""
+Guidelines:
+- Use standard libraries or those available in the environment.
+- Print the final result clearly to stdout.
+- Return ONLY the Python code inside triple backticks.
+"""
+        llm = await self._get_llm()
+        res = await llm.chat([Message(role="user", content=prompt)])
         
-        if state["error"]:
-            prompt += f"\n\nPrevious Error to fix: {state['error']}\nPrevious Code:\n{state['code']}"
-
-        messages.append(Message(role="user", content=prompt))
-        
-        res = await self.llm.chat(messages)
-        
-        # Robust code extraction
-        state["code"] = self._extract_code(res.content)
+        # Extract code from markdown
+        code_match = re.search(r"```python\n(.*?)\n```", res.content, re.DOTALL)
+        if code_match:
+            state["code"] = code_match.group(1)
+        else:
+            state["code"] = res.content # Fallback if no backticks
             
         return state
 
-    def _extract_code(self, content: str) -> str:
-        """
-        Robustly extracts Python code from LLM response.
-        Handles multiple blocks and missing closing backticks.
-        """
-        # 1. Find all blocks with triple backticks
-        # This pattern handles both closed blocks and blocks that go to the end of string
-        blocks = re.findall(r"```(?:python)?\s*(.*?)(?:```|$)", content, re.DOTALL | re.IGNORECASE)
+    async def _execute(self, state: CodeState) -> CodeState:
+        """Runs the code in the sandboxed environment."""
+        if not state["code"]:
+            state["error"] = "No code generated."
+            return state
+
+        success, output = await self.sandbox.execute(state["code"])
+        state["output"] = output
+        state["success"] = success
         
-        if not blocks:
-            # Fallback: if no backticks, just return the whole thing stripped
-            return content.strip()
+        if not success:
+            state["error"] = output
             
-        # 2. If multiple blocks, pick the longest one (heuristic for the main script)
-        # or join them if they look like parts of the same script.
-        # For now, picking the longest is safer than joining potentially unrelated snippets.
-        blocks = [b.strip() for b in blocks if b.strip()]
-        if not blocks:
-            return content.strip()
-            
-        return max(blocks, key=len)
+        return state
 
     async def _debug(self, state: CodeState) -> CodeState:
+        """Analyzes the error and prepares for the next attempt."""
         state["error"] = f"Execution failed with output:\n{state['output']}"
         logger.warning(f"Debugging attempt {state['retries'] + 1} for task: {state['task']}")
         return state
 
     def _format_result(self, state: CodeState) -> AgentResult:
+        from .base import AgentMetadata
         if state["success"]:
             voice_summary = f"I've successfully created and executed the script for {state['task']}."
             return AgentResult(
                 content=f"Code executed successfully.\n\nOutput:\n{state['output']}\n\nCode:\n```python\n{state['code']}\n```",
-                metadata={"tts_content": voice_summary, "success": True}
+                metadata=AgentMetadata(tts_content=voice_summary),
+                success=True
             )
         else:
             error_summary = f"I tried 3 times but couldn't fix the code. The final error was: {state['output'][:100]}"
             return AgentResult(
-                content=f"Failed to complete task after {state['max_retries']} attempts.\nLast Output:\n{state['output']}",
+                content=f"Failed to complete task after {state['max_retries']} attempts.\\nLast Output:\\n{state['output']}",
                 success=False,
-                metadata={"tts_content": error_summary}
+                metadata=AgentMetadata(tts_content=error_summary)
             )

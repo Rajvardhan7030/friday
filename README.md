@@ -38,17 +38,26 @@ Before bringing FRIDAY to life, ensure your system meets these requirements:
 ---
 
 ## 🚀 Installation
+To ensure the `friday` command is available in your terminal, it is highly recommended to use a **Virtual Environment**. This avoids common "command not found" errors on Linux/Fedora.
+
 1.  **Clone the Repository**:
     ```bash
     git clone https://github.com/your-repo/friday.git
     cd friday
     ```
 
-2.  **Install the Package**:
-    It is recommended to use a virtual environment.
+2.  **Create and Activate a Virtual Environment**:
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
+
+3.  **Install the Package**:
     ```bash
     pip install -e .
     ```
+
+> **Note for Fedora/Linux users**: If you prefer *not* to use a virtual environment, you may need to add `~/.local/bin` to your system's PATH. You can do this by adding `export PATH="$HOME/.local/bin:$PATH"` to your `~/.bashrc` or `~/.zshrc` file.
 
 ---
 

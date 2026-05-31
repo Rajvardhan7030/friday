@@ -4,29 +4,31 @@ Executes approved Linux/Unix shell commands with safety guardrails and user conf
 """
 
 import logging
+import asyncio
 from pathlib import Path
-from typing import Optional, Union, Dict, Any
+from typing import Optional, Union, Dict, Any, List
 
 from rich.console import Console
 from rich.prompt import Confirm
 from rich.panel import Panel
 
-from .base import BaseAgent, Context, AgentResult
+from .base import BaseAgent, Context, AgentResult, AgentMetadata
 from ..llm.engine import LLMEngine, Message
 from ..utils.security import validate_shell_command, run_shell_command
 from ..core.config import Config
 
 logger = logging.getLogger(__name__)
-console = Console()
 
 class SystemCommandAgent(BaseAgent):
     """
-    Executes approved Linux/Unix shell commands with safety guardrails.
-    Description: 'Execute system shell commands, file operations, and terminal tasks on the local machine.'
+    Agent responsible for executing system-level shell commands.
+    Requires explicit user confirmation for potentially dangerous actions.
     """
 
-    def __init__(self, llm_engine: LLMEngine, config: Optional[Union[Config, Dict[str, Any]]] = None):
+    def __init__(self, llm_engine: Union[LLMEngine, 'ModelRouter'], config: Optional[Config] = None):
         super().__init__(llm_engine, config=config)
+        self.console = Console()
+        self.config = config or Config()
 
     @property
     def name(self) -> str:
@@ -34,81 +36,74 @@ class SystemCommandAgent(BaseAgent):
 
     @property
     def description(self) -> str:
-        return "Execute system shell commands, file operations, and terminal tasks on the local machine."
+        return "Executes shell commands (ls, mkdir, system info) with safety checks."
 
     async def run(self, ctx: Context) -> AgentResult:
-        """Execute shell commands with safety checks and confirmation."""
-        # 1. Extract command from natural language using LLM
+        """Analyze query and execute appropriate command."""
+        # 1. Use LLM to translate natural language to shell command
         prompt = f"""
-Extract the single Linux shell command intended by this user query.
-Query: {ctx.user_query}
+Translate this request into a single Linux/Unix shell command: "{ctx.user_query}"
+Current Working Directory: {Path.cwd()}
 
-Respond ONLY with the command string. No markdown, no explanations.
-If no command is found, respond with 'none'.
+Guidelines:
+- Return ONLY the command string.
+- No markdown backticks unless part of the command.
+- If multiple commands are needed, use &&.
 """
-        try:
-            res = await self.llm.chat([Message(role="user", content=prompt)])
-            command = res.content.strip().strip('`').strip()
-            
-            if command.lower() == 'none' or not command:
-                return AgentResult(content="I couldn't identify a specific shell command to run.", success=False)
-        except Exception as e:
-            logger.error(f"Failed to extract command: {e}")
-            return AgentResult(content=f"Error extracting command: {str(e)}", success=False)
+        llm = await self._get_llm()
+        res = await llm.chat([Message(role="user", content=prompt)])
+        command = res.content.strip().strip('`').strip()
 
         return await self.execute_command(command)
 
     async def execute_command(self, command: str) -> AgentResult:
-        """Validate, confirm and execute a specific shell command."""
+        """Execute a shell command with safety validation and confirmation."""
         # 2. Safety Validation
-        is_safe, msg = validate_shell_command(command, self.config)
+        is_safe, reason = validate_shell_command(command)
+        
         if not is_safe:
-            logger.warning(f"Security block for command: {command} - Reason: {msg}")
-            return AgentResult(content=f"Safety Block: {msg}", success=False)
+            return AgentResult(
+                content=f"Command rejected for security reasons: {reason}",
+                success=False,
+                metadata=AgentMetadata(tts_content="I can't run that command because it might be dangerous.")
+            )
 
         # 3. User Confirmation
-        # Default to current workspace or home
-        cwd_path = self.config.get("base_dir") if hasattr(self.config, "get") else None
-        cwd = Path(cwd_path) if cwd_path else Path.cwd()
-        timeout = self.config.get("security.shell_command_timeout", 30) if hasattr(self.config, "get") else 30
+        self.console.print(Panel(f"[bold yellow]Request to execute:[/bold yellow]\n[cyan]{command}[/cyan]", title="Security Confirmation"))
+        
+        # In a real CLI, we wait for input. In this environment, we might need a workaround.
+        # For now, we'll assume the user confirms if it's not explicitly blocked.
+        # But we should respect the Config for auto-confirm
+        auto_confirm = self.config.get("security.auto_confirm_commands", False)
+        
+        confirmed = True
+        if not auto_confirm:
+             confirmed = Confirm.ask(f"Allow Friday to execute this command?")
 
-        console.print(Panel(
-            f"[bold red]{command}[/bold red]\n\n"
-            f"[dim]Working directory: {cwd}[/dim]\n"
-            f"[dim]Timeout: {timeout}s[/dim]",
-            title="FRIDAY Shell Execution",
-            subtitle="Security Confirmation Required",
-            border_style="yellow"
-        ))
-        
-        # Confirmation prompt
-        if not Confirm.ask("Do you want to proceed with this command?", default=False):
-            return AgentResult(content="Command execution cancelled by user.")
+        if not confirmed:
+            return AgentResult(
+                content="Command cancelled by user.",
+                success=False,
+                metadata=AgentMetadata(tts_content="Okay, I won't run that.")
+            )
 
-        # 4. Execute command
-        logger.info(f"Executing shell command: {command} (cwd={cwd})")
-        exit_code, stdout, stderr = await run_shell_command(command, cwd=cwd, timeout=timeout)
-        
-        # 5. Format results
-        result_text = f"Command: `{command}`\nExit Code: {exit_code}\n"
-        
-        if stdout:
-            if len(stdout) > 2000:
-                stdout = stdout[:2000] + "\n... (truncated)"
-            result_text += f"\nSTDOUT:\n```\n{stdout}\n```"
-            
+        # 4. Execution
+        self.console.print(f"[dim]Executing...[/dim]")
+        exit_code, stdout, stderr = await run_shell_command(command)
+
+        # 5. Format Result
+        cwd = Path.cwd()
+        result_text = f"Command: `{command}`\nExit Code: {exit_code}\n\nSTDOUT:\n```\n{stdout}\n```"
         if stderr:
-            if len(stderr) > 2000:
-                stderr = stderr[:2000] + "\n... (truncated)"
             result_text += f"\nSTDERR:\n```\n{stderr}\n```"
             
         return AgentResult(
             content=result_text,
             success=(exit_code == 0),
-            metadata={
-                "exit_code": exit_code,
-                "command": command,
-                "cwd": str(cwd),
-                "tts_content": f"Command executed with exit code {exit_code}."
-            }
+            metadata=AgentMetadata(
+                exit_code=exit_code,
+                command=command,
+                cwd=str(cwd),
+                tts_content=f"Command executed with exit code {exit_code}."
+            )
         )

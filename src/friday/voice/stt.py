@@ -152,24 +152,25 @@ class STTEngine:
             )
 
             logger.info("Listening...")
-            full_text = ""
+            text_parts = []
             last_speech_time = asyncio.get_event_loop().time()
             start_time = last_speech_time
             
             # Use non-blocking read in a loop
             while True:
-                # 1. Read audio data (non-blocking if possible)
+                # 1. Read audio data (using to_thread to avoid blocking event loop)
                 if stream.get_read_available() > 0:
-                    data = stream.read(4000, exception_on_overflow=False)
+                    data = await asyncio.to_thread(stream.read, 4000, exception_on_overflow=False)
                     
                     if self._is_speech(data):
                         last_speech_time = asyncio.get_event_loop().time()
                         
-                        if self._recognizer.AcceptWaveform(data):
-                            result = json.loads(self._recognizer.Result())
+                        # AcceptWaveform can also be slow, wrap it too
+                        if await asyncio.to_thread(self._recognizer.AcceptWaveform, data):
+                            result = json.loads(await asyncio.to_thread(self._recognizer.Result))
                             text = result.get("text", "").strip()
                             if text:
-                                full_text += " " + text
+                                text_parts.append(text)
                         else:
                             # Partial results can be ignored unless we want real-time display
                             pass
@@ -181,23 +182,23 @@ class STTEngine:
                     logger.info("STT overall timeout reached.")
                     break
                     
-                if full_text and (now - last_speech_time > silence_limit):
+                if text_parts and (now - last_speech_time > silence_limit):
                     logger.info("Silence detected. Stopping.")
                     break
                 
                 await asyncio.sleep(0.01) # Yield to event loop
 
             # Get final result
-            final_res = json.loads(self._recognizer.FinalResult())
-            full_text += " " + final_res.get("text", "").strip()
+            final_res = json.loads(await asyncio.to_thread(self._recognizer.FinalResult))
+            text_parts.append(final_res.get("text", "").strip())
             
-            transcription = full_text.strip()
+            transcription = " ".join(part for part in text_parts if part).strip()
             if transcription:
                 logger.info(f"Transcribed: {transcription}")
             return transcription or None
 
         except Exception as e:
-            logger.error(f"STT Error: {e}")
+            logger.error(f"STT Error: {e}", exc_info=True)
             return None
         finally:
             if stream:

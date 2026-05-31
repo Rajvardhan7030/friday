@@ -1,5 +1,7 @@
 .env
 .env*
+.venv
+*.*env
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -11,3 +13,4 @@ dist/
 .coverage
 htmlcov/
 docs
+GEMINI.md

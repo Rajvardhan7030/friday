@@ -39,3 +39,33 @@ class ConfigurationError(FridayError):
 class LLMError(FridayError):
     """Raised when an LLM engine fails or a model is missing in the engine."""
     pass
+
+
+class MemoryInitializationError(FridayError):
+    """Raised when memory components (VectorStore, SQLite) fail to initialize."""
+    pass
+
+
+class ToolExecutionError(FridayError):
+    """Raised when a tool or MCP command execution fails."""
+    pass
+
+
+class PluginLoadError(FridayError):
+    """Raised when a dynamic plugin fails to load."""
+    pass
+
+
+class PermissionDeniedError(FridayError):
+    """Raised when a tool execution is blocked by security policy."""
+    pass
+
+
+class BrowserDaemonUnavailable(FridayError):
+    """Raised when the Go browser daemon is not reachable."""
+    pass
+
+
+class ProviderRateLimitError(LLMError):
+    """Raised when an LLM provider (e.g., Gemini, OpenAI) returns a 429."""
+    pass
