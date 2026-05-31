@@ -156,15 +156,27 @@ class VectorStore:
             return []
 
     async def reset_collection(self, collection_name: str) -> None:
-        """Delete and recreate a collection."""
+        """Rename and recreate a collection to avoid data loss on mismatch."""
         async with self._lock:
             if self.client:
                 try:
-                    self.client.delete_collection(collection_name)
+                    import datetime
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    backup_name = f"{collection_name}_backup_{timestamp}"
+                    
+                    try:
+                        # Attempt to rename existing collection
+                        collection = self.client.get_collection(collection_name)
+                        collection.modify(name=backup_name)
+                        logger.info(f"Collection '{collection_name}' renamed to '{backup_name}' for backup.")
+                    except Exception as e:
+                        logger.warning(f"Could not rename collection '{collection_name}' to '{backup_name}': {e}. Deleting instead.")
+                        self.client.delete_collection(collection_name)
+
                     if collection_name in self._collections:
                         del self._collections[collection_name]
                     
-                    # Re-create
+                    # Re-create the original collection
                     self._collections[collection_name] = self.client.create_collection(
                         name=collection_name,
                         metadata={"hnsw:space": "cosine"}
@@ -172,6 +184,6 @@ class VectorStore:
                     if not self.default_collection or collection_name == self.default_collection:
                         self.collection = self._collections[collection_name]
                     
-                    logger.info(f"Collection '{collection_name}' has been reset.")
+                    logger.info(f"Collection '{collection_name}' has been reset with new dimension compatibility.")
                 except Exception as e:
                     logger.error(f"Failed to reset collection '{collection_name}': {e}")

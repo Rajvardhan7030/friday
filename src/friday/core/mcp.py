@@ -47,6 +47,8 @@ class MCPClient:
         self._external_tool_map: Dict[str, str] = {}
         # To keep track of external tool metadata
         self._external_tool_metadata: Dict[str, MCPTool] = {}
+        # External connection tasks: {server_name: Task}
+        self._connection_tasks: Dict[str, asyncio.Task] = {}
         
         self._lock = asyncio.Lock()
         self._initialized = False
@@ -85,7 +87,8 @@ class MCPClient:
                     )
                     
                     # We start a background task for each server's connection
-                    asyncio.create_task(self._connect_to_server(name, params))
+                    task = asyncio.create_task(self._connect_to_server(name, params))
+                    self._connection_tasks[name] = task
                     
                 except Exception as e:
                     logger.error(f"Failed to setup external MCP server {name}: {e}")
@@ -221,9 +224,20 @@ class MCPClient:
         raise ValueError(f"Unknown MCP tool: {name}")
 
     async def shutdown(self):
-        """Closes all external sessions."""
+        """Closes all external sessions and cancels connection tasks."""
         async with self._lock:
             self._shutdown = True
+            
+            # Cancel all connection tasks
+            for name, task in self._connection_tasks.items():
+                if not task.done():
+                    task.cancel()
+            
+            # Wait for tasks to be cancelled
+            if self._connection_tasks:
+                await asyncio.gather(*self._connection_tasks.values(), return_exceptions=True)
+                self._connection_tasks.clear()
+
             names = list(self._external_sessions.keys())
             for name in names:
                 session = self._external_sessions.pop(name)

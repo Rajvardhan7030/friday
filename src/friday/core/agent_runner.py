@@ -4,7 +4,6 @@ import logging
 import pkgutil
 import asyncio
 import json
-import uuid
 from importlib import import_module
 from typing import Optional, List, Dict, Any, Set, Union, AsyncIterator
 from pathlib import Path
@@ -30,180 +29,13 @@ from ..agents.router import AgentRouter
 from ..agents.tools import LocalDocumentRetriever
 from ..skills.web_search_skill import WebSearchSkill
 from ..skills.browser_skill import BrowserSkill
+from .session import Session
 from .mcp import mcp_client
 from .observability import trace_manager
 from .permissions import PermissionManager
 from .recovery import recovery_manager
 
 logger = logging.getLogger(__name__)
-
-class Session:
-    """Conversation state with rolling summary support."""
-
-    def __init__(
-        self,
-        max_history_messages: int = 100,
-        recent_messages: int = 20,
-        summary_max_chars: int = 4000,
-    ):
-        self.history: List[Dict[str, str]] = []
-        self.last_action: Optional[str] = None
-        self.variables: Dict[str, Any] = {}
-        self.max_history_messages = max_history_messages
-        self.recent_messages = recent_messages
-        self.summary_max_chars = summary_max_chars
-        self.history_summary = ""
-        self.session_id = uuid.uuid4().hex[:8]
-        self._summarize_lock = asyncio.Lock()
-        self._pending_tasks: Set[asyncio.Task] = set()
-        self._pending_archival: List[Dict[str, Any]] = []
-
-    async def aclose(self) -> None:
-        """Wait for all pending summarization tasks to complete."""
-        if self._pending_tasks:
-            logger.info(f"Waiting for {len(self._pending_tasks)} pending summarization tasks...")
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-            self._pending_tasks.clear()
-
-    def add_message(self, role: str, content: Optional[str] = None, **kwargs):
-        """Add a message to the session history."""
-        msg = {"role": role, "content": content}
-        msg.update(kwargs)
-        self.history.append(msg)
-        if len(self.history) > self.max_history_messages:
-            overflow = len(self.history) - self.max_history_messages
-            archived_messages = self.history[:overflow]
-            self.history = self.history[overflow:]
-            # Buffer for later summarization to avoid resource contention during active chat
-            self._pending_archival.extend(archived_messages)
-
-    async def summarize(self, llm: Optional['LLMEngine'] = None) -> None:
-        """Process buffered messages for summarization."""
-        if not self._pending_archival:
-            return
-            
-        async with self._summarize_lock:
-            if not self._pending_archival:
-                return
-                
-            to_process = list(self._pending_archival)
-            self._pending_archival = []
-            
-            if llm:
-                await self._summarize_messages(to_process, llm)
-            else:
-                self._append_to_summary(to_process)
-
-    async def _summarize_messages(self, archived_messages: List[Dict[str, Any]], llm: 'LLMEngine') -> None:
-        """Condense evicted messages into a structured semantic JSON summary."""
-        async with self._summarize_lock:
-            lines = []
-            for msg in archived_messages:
-                role = msg['role'].capitalize()
-                content = msg.get('content') or ""
-                if msg.get('tool_calls'):
-                    content += f" [Calls tools: {', '.join(tc.get('function', {}).get('name', '') for tc in msg['tool_calls'])}]"
-                lines.append(f"{role}: {content}")
-            
-            chat_text = "\n".join(lines)
-
-            current = self.history_summary if self.history_summary else "{}"
-            prompt = (
-                "You are an AI assistant's memory manager. Analyze this conversation snippet "
-                "and update the current summary. The summary MUST be valid JSON containing "
-                "'user_preferences' (list), 'active_tasks' (list), and 'general_context' (string).\n\n"
-                f"Current Summary:\n{current}\n\n"
-                f"New Messages:\n{chat_text}\n\n"
-                "Return ONLY the updated JSON object. Do not include markdown blocks or extra text."
-            )
-
-            try:
-                res = await llm.chat([Message(role="system", content=prompt)])
-                content = res.content.strip()
-                if content.startswith("```json"):
-                    content = content[7:]
-                elif content.startswith("```"):
-                    content = content[3:]
-                if content.endswith("```"):
-                    content = content[:-3]
-                content = content.strip()
-
-                # Verify JSON
-                json.loads(content)
-                self.history_summary = content
-                logger.info("Session semantic memory updated successfully.")
-            except Exception as e:
-                logger.warning(f"Semantic summarization failed, falling back to text: {e}")
-                self._append_to_summary(archived_messages)
-
-    def build_llm_messages(self, max_tokens: int = 4000) -> List[Message]:
-        """Build the message list for free-form chat with summarized context and token budgeting."""
-        system_msg = Message(
-            role="system",
-            content="You are FRIDAY, a helpful, privacy-first local AI assistant. Answer the user's request directly or use tools if needed."
-        )
-        
-        messages: List[Message] = [system_msg]
-        
-        # Accurate token estimation using tiktoken
-        def estimate_tokens(text: str) -> int:
-            try:
-                import tiktoken
-                # Use cl100k_base (GPT-4) as a good general-purpose proxy for modern LLMs
-                # unless we specifically detect a different model family.
-                encoding = tiktoken.get_encoding("cl100k_base")
-                return len(encoding.encode(text))
-            except (ImportError, Exception):
-                # Fallback to rough heuristic if tiktoken is unavailable
-                return len(text) // 4
-
-        current_tokens = estimate_tokens(system_msg.content)
-
-        if self.history_summary:
-            summary_content = (
-                "Conversation summary from earlier in this session:\n"
-                f"{self.history_summary}"
-            )
-            summary_tokens = estimate_tokens(summary_content)
-            
-            # If summary is too large, we might need to truncate it further
-            # but for now we just add it if we have space
-            if current_tokens + summary_tokens < max_tokens * 0.4: # Reserve 40% for summary
-                messages.append(Message(role="system", content=summary_content))
-                current_tokens += summary_tokens
-
-        recent_history = self.history[-self.recent_messages:] if self.recent_messages > 0 else []
-        
-        valid_fields = {"role", "content", "name", "tool_calls", "tool_call_id"}
-        
-        # Add messages from newest to oldest until we hit the budget
-        history_to_add = []
-        for entry in reversed(recent_history):
-            filtered_entry = {k: v for k, v in entry.items() if k in valid_fields}
-            content = filtered_entry.get("content") or ""
-            entry_tokens = estimate_tokens(content)
-            
-            if current_tokens + entry_tokens > max_tokens:
-                break
-                
-            history_to_add.insert(0, Message(**filtered_entry))
-            current_tokens += entry_tokens
-            
-        messages.extend(history_to_add)
-        return messages
-
-    def _append_to_summary(self, archived_messages: List[Dict[str, Any]]) -> None:
-        """Condense evicted messages into a rolling plain-text summary."""
-        summary_lines = [self.history_summary] if self.history_summary else []
-        for message in archived_messages:
-            role = message['role'].capitalize()
-            content = message.get('content') or ""
-            if message.get('tool_calls'):
-                content += f" [Calls tools: {', '.join(tc.get('function', {}).get('name', '') for tc in message['tool_calls'])}]"
-            summary_lines.append(f"{role}: {content}")
-            
-        combined_summary = "\n".join(line for line in summary_lines if line)
-        self.history_summary = combined_summary[-self.summary_max_chars:]
 
 class ToolExecutor:
     """Handles the execution of multiple tool calls from an LLM."""
@@ -309,6 +141,7 @@ class AgentRunner:
         self._memory_lock = asyncio.Lock()
         self._mcp_ready = False
         self._mcp_lock = asyncio.Lock()
+        self._pending_tasks: Set[asyncio.Task] = set()
 
         # Initialize Managers
         self.model_router = ModelRouter(config)
@@ -415,6 +248,20 @@ class AgentRunner:
         """Shutdown engines and close connections."""
         # Ensure all pending session tasks (like summarization) complete
         await self.session.aclose()
+        
+        # Wait for AgentRunner's own background tasks
+        if self._pending_tasks:
+            logger.info(f"Waiting for {len(self._pending_tasks)} pending AgentRunner tasks...")
+            try:
+                # Use wait with timeout to avoid hanging indefinitely
+                done, pending = await asyncio.wait(self._pending_tasks, timeout=5.0)
+                if pending:
+                    logger.warning(f"{len(pending)} tasks did not complete within timeout and will be cancelled.")
+                    for task in pending:
+                        task.cancel()
+            except Exception as e:
+                logger.error(f"Error while waiting for background tasks: {e}")
+            self._pending_tasks.clear()
 
         if self.memory_consolidator and self.session.session_id:
             logger.info(f"Consolidating memory for session {self.session.session_id} before shutdown...")
@@ -492,7 +339,9 @@ class AgentRunner:
                 
                 # Background indexing: don't wait for it to complete before continuing
                 # This prevents 'friday ask' from hanging while large directories are indexed.
-                asyncio.create_task(self._auto_index_memory_directories())
+                task = asyncio.create_task(self._auto_index_memory_directories())
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
                 
                 self._memory_ready = True
             except Exception as e:

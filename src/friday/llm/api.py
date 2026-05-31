@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import json
 from typing import List, Dict, Any, Optional, Tuple, Union, AsyncIterator
 from .engine import LLMEngine, Message, LLMResponse
 from ..core.exceptions import LLMError, ProviderRateLimitError
@@ -154,13 +155,11 @@ class APIEngine(LLMEngine):
         options: Optional[Dict[str, Any]] = None
     ) -> Union[LLMResponse, AsyncIterator[LLMResponse]]:
         """Send chat completion to OpenAI-compatible API."""
-        if stream:
-            raise NotImplementedError("Streaming is not yet implemented for APIEngine.")
-
         url = "chat/completions"
         payload = {
             "model": self._model_name,
             "messages": [m.model_dump(exclude_none=True) for m in messages],
+            "stream": stream
         }
         if tools:
             payload["tools"] = tools
@@ -168,6 +167,9 @@ class APIEngine(LLMEngine):
         # Pass through relevant options if provided
         if options:
             payload.update({k: v for k, v in options.items() if k not in payload})
+
+        if stream:
+            return self._stream_chat(url, payload)
 
         try:
             data = await self._request(url, payload)
@@ -193,6 +195,51 @@ class APIEngine(LLMEngine):
             raise LLMError(f"API LLM engine failed: {self._format_http_error(e)}")
         except Exception as e:
             raise LLMError(f"API LLM engine failed: {e}")
+
+    async def _stream_chat(self, url: str, payload: Dict[str, Any]) -> AsyncIterator[LLMResponse]:
+        """Internal helper for streaming chat completions."""
+        payload = self._sanitize_payload(payload)
+        semaphore = await self._get_semaphore()
+        
+        async with semaphore:
+            await self._apply_rate_limit()
+            url = url.lstrip("/")
+            
+            try:
+                async with self._client.stream("POST", url, json=payload) as response:
+                    response.raise_for_status()
+                    
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        
+                        data_str = line[6:].strip()
+                        if data_str == "[DONE]":
+                            break
+                        
+                        try:
+                            data = json.loads(data_str)
+                            if not data.get("choices"):
+                                continue
+                            
+                            choice = data["choices"][0]
+                            delta = choice.get("delta", {})
+                            content = delta.get("content", "")
+                            tool_calls = delta.get("tool_calls")
+                            
+                            yield LLMResponse(
+                                content=content or "",
+                                raw_response=data,
+                                tool_calls=tool_calls
+                            )
+                        except json.JSONDecodeError:
+                            continue
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    raise ProviderRateLimitError(f"Rate limit exceeded for provider {self._provider}. {self._format_http_error(e)}")
+                raise LLMError(f"Streaming API call failed: {self._format_http_error(e)}")
+            except Exception as e:
+                raise LLMError(f"Streaming API call failed: {e}")
 
     async def embed(self, text: str) -> List[float]:
         """Generate embeddings using OpenAI-compatible API."""

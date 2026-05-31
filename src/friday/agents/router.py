@@ -103,10 +103,17 @@ Guidelines:
 Respond ONLY with JSON: {{"agent": "category_name"}}
 """
         
-        messages = [
-            Message(role="system", content=system_prompt),
-            Message(role="user", content=f"Query: {query}")
-        ]
+        from ..core.session import Session
+        messages = Session.format_messages(
+            history=history or [],
+            system_prompt=system_prompt,
+            recent_limit=3, # Small context for intent detection
+            summary=None
+        )
+        # Add the current query as the final user message if not already in history
+        # (Runner adds it to history before calling router, but we want to be sure)
+        if not messages or messages[-1].content != f"Query: {query}":
+             messages.append(Message(role="user", content=f"Query: {query}"))
         
         try:
             llm = await self._get_llm("general_chat")
@@ -143,12 +150,13 @@ Respond ONLY with JSON: {{"agent": "category_name"}}
 
     async def _run_general_chat(self, query: str, history: List[Dict[str, str]]) -> AgentResult:
         """Fallback for general conversation when no specialized agent matches."""
-        messages = [
-            Message(role="system", content="You are FRIDAY, a helpful, privacy-first local AI assistant.")
-        ]
-        # Add history (which now includes the current query)
-        for msg in history[-5:]: # Last 5 turns for context
-            messages.append(Message(role=msg["role"], content=msg["content"]))
+        from ..core.session import Session
+        
+        messages = Session.format_messages(
+            history=history,
+            system_prompt="You are FRIDAY, a helpful, privacy-first local AI assistant.",
+            recent_limit=5
+        )
         
         llm = await self._get_llm("general_chat")
         response = await llm.chat(messages)

@@ -28,6 +28,7 @@ class TTSEngine:
         self.model_path = Path(config.get("voice.tts.model_path"))
         self.piper_path = config.get("voice.tts.piper_path")
         self._playback_lock = asyncio.Lock()
+        self._pending_tasks: Set[asyncio.Task] = set()
 
     def _validate_model(self) -> None:
         """Ensure the voice model and its JSON config exist and are valid."""
@@ -128,7 +129,9 @@ class TTSEngine:
                                 except Exception as e:
                                     logger.warning(f"Failed to cleanup background TTS file {path}: {e}")
 
-                    asyncio.create_task(_play_and_cleanup(output_file))
+                    task = asyncio.create_task(_play_and_cleanup(output_file))
+                    self._pending_tasks.add(task)
+                    task.add_done_callback(self._pending_tasks.discard)
                     output_file = None # Ownership transferred to task
 
         except Exception as e:
@@ -196,5 +199,14 @@ class TTSEngine:
                     pass
 
     async def aclose(self) -> None:
-        """Close any open resources."""
-        pass
+        """Close any open resources and wait for pending playback tasks."""
+        if self._pending_tasks:
+            logger.info(f"Waiting for {len(self._pending_tasks)} pending TTS playback tasks...")
+            try:
+                done, pending = await asyncio.wait(self._pending_tasks, timeout=5.0)
+                if pending:
+                    for task in pending:
+                        task.cancel()
+            except Exception:
+                pass
+            self._pending_tasks.clear()
