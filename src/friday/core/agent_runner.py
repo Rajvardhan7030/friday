@@ -329,11 +329,15 @@ class AgentRunner:
 
             try:
                 # Start the process in the background
+                log_file = Path(self.config.get("logging.file")).parent / "browser_daemon.log"
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                out_file = open(log_file, "a")
+
                 self._browser_daemon_process = subprocess.Popen(
                     [str(daemon_bin)],
                     cwd=str(daemon_dir),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stdout=out_file,
+                    stderr=subprocess.STDOUT,
                     start_new_session=True # Don't kill it if Friday crashes immediately
                 )
                 
@@ -344,7 +348,7 @@ class AgentRunner:
                         logger.info("Browser daemon started successfully.")
                         return
                 
-                logger.warning("Browser daemon started but health check failed.")
+                logger.warning("Browser daemon started but health check failed. See browser_daemon.log for details.")
             except Exception as e:
                 logger.error(f"Failed to start browser daemon: {e}")
 
@@ -729,16 +733,35 @@ class AgentRunner:
                     await self._add_to_history(**tool_msg.model_dump(exclude_none=True))
                 # Continue loop to next iteration
             else:
-                # Streaming final answer
+                # Streaming final answer or tool calls
                 full_content = ""
+                collected_tool_calls = None
+                
                 async for chunk in response:
                     if chunk.content:
                         full_content += chunk.content
                         yield chunk.content
+                    if chunk.tool_calls:
+                        collected_tool_calls = chunk.tool_calls
                 
-                await self._add_to_history("assistant", full_content)
-                await self._remember_exchange(original_text, full_content)
-                return
+                if not collected_tool_calls:
+                    await self._add_to_history("assistant", full_content)
+                    await self._remember_exchange(original_text, full_content)
+                    return
+                
+                # Handle tool calls that appeared in the stream
+                assistant_msg = Message(role="assistant", content=full_content, tool_calls=collected_tool_calls)
+                messages.append(assistant_msg)
+                await self._add_to_history(**assistant_msg.model_dump(exclude_none=True))
+                
+                # Execute tools
+                tool_executor = ToolExecutor(mcp_client, permission_manager=self.permission_manager)
+                tool_results = await tool_executor.execute_tool_calls(collected_tool_calls)
+                
+                for tool_msg in tool_results:
+                    messages.append(tool_msg)
+                    await self._add_to_history(**tool_msg.model_dump(exclude_none=True))
+                # Continue loop to next iteration
         
         final_msg = "I've reached my thinking limit on this task."
         await self._add_to_history("assistant", final_msg)

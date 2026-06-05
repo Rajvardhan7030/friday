@@ -30,7 +30,12 @@ Before bringing FRIDAY to life, ensure your system meets these requirements:
 1.  **Python (3.10 or newer)**: The core engine. Download from [python.org](https://www.python.org/downloads/).
 2.  **Ollama**: The "brain" for local LLMs. Download from [ollama.com](https://ollama.com).
 3.  **Docker (Optional)**: Highly recommended for the **Code Assistant**. It creates a "sealed box" (sandbox) to run generated code safely.
-4.  **PortAudio (Linux only)**: Required for voice features.
+4.  **Chromium/Google Chrome**: Required for the **Browser Control** skills.
+    ```bash
+    sudo dnf install chromium # Fedora
+    sudo apt-get install chromium-browser # Ubuntu
+    ```
+5.  **PortAudio (Linux only)**: Required for voice features.
     ```bash
     sudo apt-get install portaudio19-dev
     ```

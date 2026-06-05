@@ -448,7 +448,8 @@ async def friday_doctor():
             if resp.status_code == 200:
                 console.print(f"• Browser Daemon: [green]ONLINE[/green] ({daemon_url})")
             else:
-                console.print(f"• Browser Daemon: [yellow]ERROR[/yellow] (Status: {resp.status_code})")
+                error_msg = resp.text.strip() if resp.text else f"Status: {resp.status_code}"
+                console.print(f"• Browser Daemon: [yellow]ERROR[/yellow] ({error_msg})")
         except Exception:
             console.print(f"• Browser Daemon: [bold red]OFFLINE[/bold red] (Is friday-browser-daemon running?)")
     except ImportError:

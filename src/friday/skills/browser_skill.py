@@ -41,7 +41,9 @@ class BrowserSkill(BaseSkill):
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
                 resp = await client.get(f"{self.daemon_url}/health")
-                return resp.status_code == 200
+                # The daemon process is running if it responds to HTTP requests,
+                # even if it returns 503 (e.g. missing browser).
+                return True
         except Exception:
             return False
 
