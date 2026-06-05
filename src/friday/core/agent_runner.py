@@ -29,11 +29,13 @@ from ..agents.router import AgentRouter
 from ..agents.tools import LocalDocumentRetriever
 from ..skills.web_search_skill import WebSearchSkill
 from ..skills.browser_skill import BrowserSkill
+import subprocess
 from .session import Session
 from .mcp import mcp_client
 from .observability import trace_manager
 from .permissions import PermissionManager
 from .recovery import recovery_manager
+from .exceptions import ModelNotFoundError, PermissionDeniedError, ProviderRateLimitError, BrowserDaemonUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +144,10 @@ class AgentRunner:
         self._mcp_ready = False
         self._mcp_lock = asyncio.Lock()
         self._pending_tasks: Set[asyncio.Task] = set()
+        
+        # Browser Daemon Management
+        self._browser_daemon_process: Optional[subprocess.Popen] = None
+        self._browser_daemon_lock = asyncio.Lock()
 
         # Initialize Managers
         self.model_router = ModelRouter(config)
@@ -278,10 +284,75 @@ class AgentRunner:
         
         await mcp_client.shutdown()
         
+        # Terminate Browser Daemon
+        if self._browser_daemon_process:
+            logger.info("Terminating browser daemon...")
+            self._browser_daemon_process.terminate()
+            try:
+                self._browser_daemon_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._browser_daemon_process.kill()
+            self._browser_daemon_process = None
+
         logger.info("AgentRunner resources closed.")
+
+    async def _ensure_browser_daemon(self) -> None:
+        """Checks if the browser daemon is reachable, starts it if not."""
+        if not hasattr(self, "skills"):
+            return
+
+        skill = self.skills.get("browser_control")
+        if not skill or not hasattr(skill, "is_daemon_alive"):
+            return
+
+        async with self._browser_daemon_lock:
+            if await skill.is_daemon_alive():
+                return
+
+            logger.info("Browser daemon is offline. Attempting to start it...")
+            
+            # Find the binary
+            project_root = Path(__file__).parent.parent.parent.parent
+            daemon_dir = project_root / "src" / "friday" / "skills" / "browser_daemon"
+            
+            # Check for binary with different possible names (Standard: friday-browser-daemon)
+            daemon_bin = None
+            for bin_name in ["friday-browser-daemon", "daemon"]:
+                path = daemon_dir / bin_name
+                if path.exists():
+                    daemon_bin = path
+                    break
+            
+            if not daemon_bin:
+                logger.error(f"Browser daemon binary not found in {daemon_dir}")
+                return
+
+            try:
+                # Start the process in the background
+                self._browser_daemon_process = subprocess.Popen(
+                    [str(daemon_bin)],
+                    cwd=str(daemon_dir),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True # Don't kill it if Friday crashes immediately
+                )
+                
+                # Wait a bit for it to start
+                for _ in range(5):
+                    await asyncio.sleep(1)
+                    if await skill.is_daemon_alive():
+                        logger.info("Browser daemon started successfully.")
+                        return
+                
+                logger.warning("Browser daemon started but health check failed.")
+            except Exception as e:
+                logger.error(f"Failed to start browser daemon: {e}")
 
     async def _ensure_mcp_ready(self) -> None:
         """Initialize external MCP servers once."""
+        # Also ensure browser daemon is running if the skill is loaded
+        await self._ensure_browser_daemon()
+
         if self._mcp_lock is None:
             self._mcp_lock = asyncio.Lock()
             

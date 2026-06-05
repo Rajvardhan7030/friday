@@ -443,7 +443,8 @@ async def friday_doctor():
         import httpx
         daemon_url = config.get("skills.browser.daemon_url", "http://localhost:9000")
         try:
-            resp = httpx.get(f"{daemon_url}/health", timeout=2.0)
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{daemon_url}/health", timeout=2.0)
             if resp.status_code == 200:
                 console.print(f"• Browser Daemon: [green]ONLINE[/green] ({daemon_url})")
             else:
