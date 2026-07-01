@@ -28,6 +28,7 @@ class MemoryManager:
         self._ready = False
         self._disabled_reason: Optional[str] = None
         self._lock = asyncio.Lock()
+        self._pending_tasks: Set[asyncio.Task] = set()
         
         self._setup_memory()
 
@@ -51,7 +52,7 @@ class MemoryManager:
         )
         self.document_indexer = DocumentIndexer(self.vector_store)
 
-    async def ensure_ready(self, pending_tasks: Set[asyncio.Task]) -> bool:
+    async def ensure_ready(self, pending_tasks: Optional[Set[asyncio.Task]] = None) -> bool:
         """Initialize the vector store and auto-index configured directories once."""
         if self._ready:
             return True
@@ -72,8 +73,9 @@ class MemoryManager:
                 
                 # Background indexing
                 task = asyncio.create_task(self._auto_index_directories())
-                pending_tasks.add(task)
-                task.add_done_callback(pending_tasks.discard)
+                target_set = pending_tasks if pending_tasks is not None else self._pending_tasks
+                target_set.add(task)
+                task.add_done_callback(target_set.discard)
                 
                 self._ready = True
                 return True
@@ -150,9 +152,8 @@ class MemoryManager:
     async def add_to_history(self, session_id: str, role: str, content: Optional[str] = None, **kwargs) -> None:
         """Add a message to persistent storage."""
         if self.config.get("memory.enabled", True):
-            # We don't await ensure_ready here to avoid blocking UI, 
-            # but we need it for persistence.
-            # Actually, history persistence should probably be more reliable.
+            # Ensure database is initialized before writing to it
+            await self.ensure_ready()
             if self.conversation_memory:
                 metadata = kwargs.copy()
                 metadata.pop("llm", None)

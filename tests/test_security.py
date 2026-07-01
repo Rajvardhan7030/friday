@@ -44,6 +44,20 @@ def test_validate_shell_command_system_dir_protection():
     assert validate_shell_command("cat /etc/shadow")[0] is False
     assert validate_shell_command("mv /bin/sh /tmp/sh")[0] is False
 
+def test_validate_shell_command_redirection_and_subshells():
+    # Unquoted redirection should be blocked
+    assert validate_shell_command("echo hello > file.txt")[0] is False
+    assert validate_shell_command("echo hello >> file.txt")[0] is False
+    assert validate_shell_command("cat < file.txt")[0] is False
+    assert validate_shell_command("echo 'hello > file.txt'")[0] is True  # Quoted redirection allowed
+    assert validate_shell_command("echo \"hello > file.txt\"")[0] is True  # Quoted redirection allowed
+
+    # Unquoted subshells/parentheses should be blocked
+    assert validate_shell_command("(ls)")[0] is False
+    assert validate_shell_command("ls -la (arg)")[0] is False
+    assert validate_shell_command("echo '(quoted)'")[0] is True          # Quoted parentheses allowed
+    assert validate_shell_command("echo \"(quoted)\"")[0] is True          # Quoted parentheses allowed
+
 @pytest.mark.asyncio
 async def test_unshare_backend_fails_closed_when_isolation_is_unavailable(monkeypatch, tmp_path):
     config = MagicMock()

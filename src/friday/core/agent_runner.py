@@ -116,8 +116,9 @@ class ToolExecutor:
 class AgentRunner:
     """The 'Brain' that decides how to handle an input."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, tts: Optional[Any] = None):
         self.config = config
+        self.tts = tts
         self.session = Session(
             max_history_messages=config.get("session.max_history_messages", 100),
             recent_messages=config.get("session.recent_messages", 20),
@@ -438,6 +439,42 @@ class AgentRunner:
     def last_tts_content(self) -> Optional[str]:
         """Returns the voice-friendly summary of the last agent response, if any."""
         return getattr(self, "_last_tts_content", None)
+
+    @property
+    def vector_store(self) -> Optional[Any]:
+        """Returns the vector store memory component."""
+        if hasattr(self, "_vector_store"):
+            return self._vector_store
+        if hasattr(self, "memory_manager") and self.memory_manager:
+            return self.memory_manager.vector_store
+        return None
+
+    @vector_store.setter
+    def vector_store(self, value: Optional[Any]) -> None:
+        """Sets the vector store memory component."""
+        self._vector_store = value
+        if hasattr(self, "memory_manager") and self.memory_manager:
+            self.memory_manager.vector_store = value
+
+    @property
+    def conversation_memory(self) -> Optional[Any]:
+        """Returns the conversation history memory database."""
+        if hasattr(self, "_conversation_memory"):
+            return self._conversation_memory
+        if hasattr(self, "memory_manager") and self.memory_manager:
+            return self.memory_manager.conversation_memory
+        return None
+
+    @conversation_memory.setter
+    def conversation_memory(self, value: Optional[Any]) -> None:
+        """Sets the conversation history memory database."""
+        self._conversation_memory = value
+        if hasattr(self, "memory_manager") and self.memory_manager:
+            self.memory_manager.conversation_memory = value
+
+    async def _ensure_memory_ready(self) -> bool:
+        """Ensures that the memory manager is initialized and ready."""
+        return await self.memory_manager.ensure_ready(self._pending_tasks)
 
     async def _fallback_to_llm(self, text: str, memory_task: Optional[asyncio.Task] = None) -> AsyncIterator[str]:
         """Use the local LLM when no specific command is triggered, with streaming support."""

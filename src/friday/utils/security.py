@@ -118,6 +118,28 @@ ALLOWED_BINARIES = {
     "ps", "history", "type", "which", "cp", "mv", "rm", "sleep"
 }
 
+def _has_unquoted_char(s: str, chars: set[str]) -> bool:
+    """Helper to detect if any of the target characters exist outside of quotes."""
+    in_single = False
+    in_double = False
+    escaped = False
+    for char in s:
+        if escaped:
+            escaped = False
+            continue
+        if char == '\\':
+            escaped = True
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if not in_single and not in_double and char in chars:
+            return True
+    return False
+
 def validate_shell_command(command: str, config: Optional[Config] = None) -> Tuple[bool, str]:
     """
     Checks if a shell command is safe to execute based on allowlists, blocklists and structure.
@@ -136,11 +158,12 @@ def validate_shell_command(command: str, config: Optional[Config] = None) -> Tup
     if "$" in command:
         return False, "Environment variable expansion ($) is prohibited."
 
-    # Subshell check
-    if "(" in command or ")" in command:
-         # Allow () if they are quoted, but shlex.split will handle that. 
-         # For simplicity, we block them for now unless we find a strong need.
-         pass 
+    # Check for unquoted redirection operators or subshells
+    if _has_unquoted_char(command, {">", "<"}):
+        return False, "Redirection operators (> or <) are prohibited outside of quotes."
+
+    if _has_unquoted_char(command, {"(", ")"}):
+        return False, "Subshells or parentheses are prohibited outside of quotes." 
 
     # 1. Basic Sudo check
     cmd_lower = command.lower()

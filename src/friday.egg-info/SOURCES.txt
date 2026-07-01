@@ -25,10 +25,12 @@ src/friday/core/exceptions.py
 src/friday/core/hardware.py
 src/friday/core/mcp.py
 src/friday/core/observability.py
+src/friday/core/orchestrator.py
 src/friday/core/permissions.py
 src/friday/core/plugin.py
 src/friday/core/recovery.py
 src/friday/core/registry.py
+src/friday/core/session.py
 src/friday/llm/__init__.py
 src/friday/llm/api.py
 src/friday/llm/engine.py
@@ -38,6 +40,7 @@ src/friday/memory/__init__.py
 src/friday/memory/consolidator.py
 src/friday/memory/conversation.py
 src/friday/memory/document_indexer.py
+src/friday/memory/manager.py
 src/friday/memory/vector_store.py
 src/friday/plugins/calendar/main.py
 src/friday/plugins/email/main.py

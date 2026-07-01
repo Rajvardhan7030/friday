@@ -30,9 +30,9 @@ class FridayCLI:
         self.config = Config()
         setup_logging(Path(self.config.get("logging.file")))
         
-        self.runner = AgentRunner(self.config)
         self.tts = TTSEngine(self.config)
         self.stt = STTEngine(self.config)
+        self.runner = AgentRunner(self.config, tts=self.tts)
         self.voice_mode = False
         self.voice_output_enabled = voice_output_enabled
 
