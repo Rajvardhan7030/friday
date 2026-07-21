@@ -6,7 +6,7 @@ import logging
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Union, Set
 
 from ..core.config import Config
 from ..core.exceptions import ModelNotFoundError

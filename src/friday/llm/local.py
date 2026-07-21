@@ -1,6 +1,7 @@
 """Local LLM engine integration using Ollama."""
 
 import logging
+import asyncio
 from typing import List, Dict, Any, Optional, Union, AsyncIterator
 from .engine import LLMEngine, Message, LLMResponse
 from ..core.exceptions import LLMError
@@ -189,7 +190,7 @@ class LocalEngine(LLMEngine):
             if not self._is_model_not_found_error(e):
                 logger.error(f"Ollama embedding error with {self._primary_model}: {e}")
                 raise LLMError(f"Failed to generate embeddings: {e}") from e
-            logger.warning(f"Primary model '{self._primary_model}' not found for embeddings.")
+            logger.warning(f"Primary model '{self._primary_model}' is not available or does not support embeddings.")
             tried_models.append(self._primary_model)
 
         # 2. Try known working model if available
@@ -211,7 +212,7 @@ class LocalEngine(LLMEngine):
                 if not self._is_model_not_found_error(e):
                     logger.error(f"Ollama embedding error with {self._fallback_model}: {e}")
                     raise LLMError(f"Failed to generate embeddings: {e}") from e
-                logger.warning(f"Fallback model '{self._fallback_model}' not found for embeddings.")
+                logger.warning(f"Fallback model '{self._fallback_model}' is not available or does not support embeddings.")
                 tried_models.append(self._fallback_model)
 
         # 4. Last resort
@@ -219,14 +220,14 @@ class LocalEngine(LLMEngine):
             available = await self.get_available_models()
             last_resort_models = [m for m in available if m not in tried_models]
             for model in last_resort_models:
-                logger.info(f"Using '{model}' for embeddings instead.")
+                logger.info(f"Trying '{model}' for embeddings as last resort...")
                 try:
                     res = await self._embed_with_model(model, text)
                     self._known_embed_model = model
                     return res
                 except Exception as e:
                     err_msg = str(e).lower()
-                    if "does not support embeddings" in err_msg or "400" in err_msg:
+                    if "does not support embeddings" in err_msg or "400" in err_msg or "500" in err_msg:
                         logger.warning(f"Ollama model '{model}' does not support embeddings. Trying next available.")
                         tried_models.append(model)
                         continue
@@ -239,21 +240,38 @@ class LocalEngine(LLMEngine):
         except Exception as e:
             logger.error(f"Failed to list models for last resort embeddings: {e}")
 
-        # Final failure
-        if not tried_models:
-             raise LLMError(
-                "No embedding models found in Ollama. "
-                "Please run 'ollama pull nomic-embed-text' for optimized embeddings."
-            )
-
+        # Final failure with clear user guidance
         raise LLMError(
-            f"Configured models ('{self._primary_model}', '{self._fallback_model}') were not found for embeddings, "
-            "and no other compatible embedding models were available."
+            f"No compatible embedding model available in Ollama (tried: {tried_models}). "
+            "Please run 'ollama pull nomic-embed-text' to enable vector memory."
         )
 
     async def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        """Generate local embeddings in batch using concurrency."""
-        import asyncio
+        """Generate local embeddings in batch using concurrency safely without state mutation race conditions."""
+        if not texts:
+            return []
+        
+        # Warm up/resolve the embedding model once with the first text to ensure a working model is known
+        if not self._known_embed_model:
+            await self.embed(texts[0])
+            
+        # If we have a working model, embed all texts using that resolved model concurrently
+        if self._known_embed_model:
+            model = self._known_embed_model
+            tasks = [self._client.embeddings(model=model, prompt=str(t)) for t in texts]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            output = []
+            for i, res in enumerate(results):
+                if isinstance(res, Exception):
+                    # Fallback to individual embed call if a chunk failed
+                    output.append(await self.embed(texts[i]))
+                else:
+                    normalized = self._normalize_response(res)
+                    output.append(normalized.get('embedding', []))
+            return output
+
+        # Fallback if no model could be pre-resolved
         tasks = [self.embed(text) for text in texts]
         return await asyncio.gather(*tasks)
 
@@ -280,7 +298,12 @@ class LocalEngine(LLMEngine):
     @staticmethod
     def _is_model_not_found_error(error: Exception) -> bool:
         error_msg = str(error).lower()
-        return "not found" in error_msg or "404" in error_msg
+        return (
+            "not found" in error_msg 
+            or "404" in error_msg 
+            or "does not support embeddings" in error_msg
+            or ("500" in error_msg and "embeddings" in error_msg)
+        )
 
     async def _chat_with_model(
         self,

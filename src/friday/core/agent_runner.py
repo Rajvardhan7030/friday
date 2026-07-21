@@ -11,7 +11,7 @@ from .registry import registry
 from .plugin import plugin_manager
 from .config import Config
 from .exceptions import PermissionDeniedError, ProviderRateLimitError
-from ..llm.engine import Message
+from ..llm.engine import Message, LLMEngine
 from ..llm.router import ModelRouter
 from ..agents.adaptive_rag import AdaptiveRAGAgent
 from ..agents.code_assistant import CodeAssistantAgent
@@ -46,11 +46,13 @@ class ToolExecutor:
             func_args_str = tool_call.get("function", {}).get("arguments", "{}")
             tool_call_id = tool_call.get("id")
             
+            # Fix: Initialize args to empty dict to prevent UnboundLocalError during recovery retries
+            args: Dict[str, Any] = {}
             try:
                 # Ollama sometimes returns string args, sometimes dict
                 if isinstance(func_args_str, str):
                     args = json.loads(func_args_str)
-                else:
+                elif isinstance(func_args_str, dict):
                     args = func_args_str
                 
                 # Check permissions

@@ -127,6 +127,9 @@ class VectorStore:
 
         try:
             if query_embedding is None:
+                if self.llm is None:
+                    logger.warning("VectorStore LLM engine is not attached. Cannot compute query embedding.")
+                    return []
                 query_embedding = await self.llm.embed(query)
             
             results = await asyncio.to_thread(

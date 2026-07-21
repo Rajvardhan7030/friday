@@ -99,8 +99,8 @@ class STTEngine:
         if not audio_data:
             return False
         if np is not None:
-            # Convert bytes to int16 array when numpy is available.
-            audio_np = np.frombuffer(audio_data, dtype=np.int16)
+            # Fix: Convert bytes to int16 array and cast to float32 to avoid int16 overflow when squaring values
+            audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
             energy = np.sqrt(np.mean(audio_np**2))
         else:
             # Fallback for deprecated audioop.rms
@@ -112,7 +112,7 @@ class STTEngine:
             shorts = struct.unpack(f"{count}h", audio_data)
             sum_squares = sum(s*s for s in shorts)
             energy = math.sqrt(sum_squares / count)
-        return energy > self.energy_threshold
+        return bool(energy > self.energy_threshold)
 
     async def listen(
         self, 

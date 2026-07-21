@@ -169,6 +169,10 @@ class MemoryManager:
         if not self.config.get("memory.auto_remember_conversations", True):
             return
 
+        # Fix: Ensure memory is ready before accessing vector_store or embedding LLM
+        if not await self.ensure_ready():
+            return
+
         if self.vector_store is None:
             return
 
@@ -184,5 +188,9 @@ class MemoryManager:
 
     async def consolidate_session(self, session_id: str) -> None:
         """Triggers memory consolidation for a session."""
+        # Fix: Ensure memory is ready before consolidating session
+        if not await self.ensure_ready():
+            return
+            
         if self.memory_consolidator:
             await self.memory_consolidator.consolidate_session(session_id)

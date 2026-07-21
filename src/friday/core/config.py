@@ -172,11 +172,11 @@ class Config:
             raise ConfigurationError(f"Error reading configuration file: {e}")
 
     def _save_default_config(self) -> None:
-        """Save the default configuration to a file."""
+        """Save the default configuration to a file with restricted 0o600 permissions."""
         try:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            # Use os.open with 0o600 to ensure restricted permissions from creation
-            fd = os.open(self.config_path, os.O_CREAT | os.O_WRONLY, 0o600)
+            # Fix: Include os.O_TRUNC so that existing files are truncated cleanly when overwritten
+            fd = os.open(self.config_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
             with open(fd, "w") as f:
                 yaml.dump(self._data, f, default_flow_style=False)
             logger.info(f"Created default configuration at {self.config_path}")
@@ -191,8 +191,8 @@ class Config:
                 config_key = key[7:].lower().replace("_", ".")
                 try:
                     self.set(config_key, value, save=False)
-                except ConfigurationError:
-                    # Ignore env variables that don't match our schema
+                except (ConfigurationError, TypeError, KeyError):
+                    # Ignore env variables that don't match our schema or fail casting
                     pass
 
     def _ensure_directories(self) -> None:
@@ -210,8 +210,8 @@ class Config:
         try:
             if not log_file.exists():
                 log_file.parent.mkdir(parents=True, exist_ok=True)
-                # Create empty file with 0o600
-                fd = os.open(log_file, os.O_CREAT | os.O_WRONLY, 0o600)
+                # Create empty file with 0o600 with truncation
+                fd = os.open(log_file, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
                 os.close(fd)
             else:
                 os.chmod(log_file, 0o600)
@@ -271,13 +271,13 @@ class Config:
         """Persist the current configuration to the YAML file with restricted permissions."""
         try:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            # Create file with 0o600 if it doesn't exist, or update permissions if it does
+            # Fix: Include os.O_TRUNC to ensure old content is truncated on write
             mode = 0o600
             if not self.config_path.exists():
-                with open(os.open(self.config_path, os.O_CREAT | os.O_WRONLY, mode), "w") as f:
+                with open(os.open(self.config_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, mode), "w") as f:
                     yaml.dump(self._data, f, default_flow_style=False)
             else:
-                with open(self.config_path, "w") as f:
+                with open(os.open(self.config_path, os.O_WRONLY | os.O_TRUNC, mode), "w") as f:
                     yaml.dump(self._data, f, default_flow_style=False)
                 os.chmod(self.config_path, mode)
                 

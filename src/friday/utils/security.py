@@ -184,28 +184,40 @@ def validate_shell_command(command: str, config: Optional[Config] = None) -> Tup
     # A command starts at the beginning or after a separator
     separators = {";", "&&", "||", "|"}
     expect_binary = True
+    in_sudo_prefix = False
+    skip_next_option_arg = False
+    sudo_opts_with_arg = {"-u", "-g", "-C", "-h", "-p", "-r", "-t", "-U"}
     
     for i, token in enumerate(tokens):
         if expect_binary:
-            # Handle possible sudo
-            actual_binary_token = token
             if token == "sudo" and allow_sudo:
-                if i + 1 < len(tokens):
-                    # Skip sudo and check next token
-                    continue 
-                else:
-                    return False, "Trailing sudo is invalid."
+                in_sudo_prefix = True
+                continue
             
-            # Identify the binary
-            binary = actual_binary_token.split('/')[-1]
+            if in_sudo_prefix:
+                if skip_next_option_arg:
+                    skip_next_option_arg = False
+                    continue
+                if token in sudo_opts_with_arg:
+                    skip_next_option_arg = True
+                    continue
+                if token.startswith("-"):
+                    continue
+            
+            # Identify the binary token
+            binary = token.split('/')[-1]
             if binary not in ALLOWED_BINARIES:
                 return False, f"Forbidden or unknown binary detected: {binary}. Only {sorted(list(ALLOWED_BINARIES))} are allowed."
             
             expect_binary = False
+            in_sudo_prefix = False
+            skip_next_option_arg = False
             continue
 
         if token in separators:
             expect_binary = True
+            in_sudo_prefix = False
+            skip_next_option_arg = False
             continue
         
         # Check for forbidden redirection targets or patterns in arguments
@@ -376,7 +388,12 @@ async def run_sandboxed_code(
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
             success = process.returncode == 0
             
-            output_bytes = stdout if success else stderr
+            # Fix: Combine stdout and stderr on failure so preceding stdout output is not lost
+            if success:
+                output_bytes = stdout
+            else:
+                output_bytes = stdout + b"\n" + stderr if stdout else stderr
+                
             output = output_bytes.decode('utf-8', errors='replace')
                 
             return success, output

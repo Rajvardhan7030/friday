@@ -51,7 +51,7 @@ def calculate_compatibility(model: Dict[str, Any], profile: DetailedHardwareProf
     if fit == "Won't Run" and profile.ram_gb >= ram_req:
         fit = "Good" # CPU only is "Good" if it fits in RAM
         best_quant = "Q4_K_M"
-        vram_needed = vram_reqs["Q4_K_M"]
+        vram_needed = 0.0 # Fix: CPU execution uses system RAM, not GPU VRAM
         
     # 2. Calculate "Score" (0-100)
     score = 0
