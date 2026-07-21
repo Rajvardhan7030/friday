@@ -24,6 +24,8 @@ def ignore_stderr():
         yield
         return
 
+    old_stderr_fd = None
+    devnull_fd = None
     try:
         # 1. Flush Python-level stderr to avoid losing buffered logs
         sys.stderr.flush()
@@ -34,24 +36,28 @@ def ignore_stderr():
         # 3. Open /dev/null
         devnull_fd = os.open(os.devnull, os.O_WRONLY)
         
-        try:
-            # 4. Redirect stderr (FD 2) to /dev/null
-            os.dup2(devnull_fd, sys.stderr.fileno())
-            
-            yield
-        finally:
-            # 5. Restore original stderr
-            sys.stderr.flush()
-            os.dup2(old_stderr_fd, sys.stderr.fileno())
-            
-            # 6. Cleanup
-            os.close(old_stderr_fd)
-            os.close(devnull_fd)
-            
+        # 4. Redirect stderr (FD 2) to /dev/null
+        os.dup2(devnull_fd, sys.stderr.fileno())
+        
+        yield
     except (OSError, AttributeError) as e:
         # If any system call fails, just yield and hope for the best
         logger.debug(f"Failed to redirect stderr: {e}")
         yield
+    finally:
+        # Restore original stderr and close descriptors if opened
+        if old_stderr_fd is not None:
+            try:
+                sys.stderr.flush()
+                os.dup2(old_stderr_fd, sys.stderr.fileno())
+                os.close(old_stderr_fd)
+            except Exception:
+                pass
+        if devnull_fd is not None:
+            try:
+                os.close(devnull_fd)
+            except Exception:
+                pass
 
 
 def setup_logging(

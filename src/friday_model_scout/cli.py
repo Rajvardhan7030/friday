@@ -29,6 +29,14 @@ async def run_scout(
     
     # 3. Output
     if json_output:
+        # Fix: Sort results according to the sort_by option for JSON output
+        if sort_by == "name":
+            results.sort(key=lambda x: x["name"].lower())
+        elif sort_by == "tok_s":
+            results.sort(key=lambda x: x["compat"].get("tok_s", 0.0), reverse=True)
+        else: # Default: "score"
+            results.sort(key=lambda x: x["compat"].get("score", 0), reverse=True)
+
         output = {
             "hardware": {
                 "os": profile.os,

@@ -62,6 +62,12 @@ func (m *BrowserManager) GetBrowser(profile string, headless bool) (*ManagedBrow
 	return managed, nil
 }
 
+func (m *BrowserManager) HasActiveBrowsers() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.browsers) > 0
+}
+
 type NavigateRequest struct {
 	URL      string `json:"url"`
 	Profile  string `json:"profile"`
@@ -93,8 +99,23 @@ func main() {
 	manager := NewBrowserManager()
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		// 1. If we already have managed browsers, we are definitely OK
+		if manager.HasActiveBrowsers() {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("OK"))
+			return
+		}
+
+		// 2. Otherwise, check if a browser can be found on the system
+		// launcher.LookPath() is a lightweight check that doesn't start a process
+		if _, found := launcher.LookPath(); found {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("OK"))
+		} else {
+			// Return 503 so friday doctor knows it's not just the server that's the issue
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte("ERROR: No compatible browser (Chrome/Chromium) found. Please install one to use browser skills."))
+		}
 	})
 
 	http.HandleFunc("/navigate", func(w http.ResponseWriter, r *http.Request) {

@@ -52,12 +52,14 @@ def get_recommended_model(profile: HardwareProfile) -> str:
     # Check VRAM-based recommendations first (GPU)
     if profile.gpu_vram_gb:
         for rec in MODEL_RECOMMENDATIONS:
-            if "vram_min" in rec and profile.gpu_vram_gb > rec["vram_min"]:
+            # Fix: Use >= so exact minimum VRAM specs (e.g., 12.0 GB or 6.0 GB) match recommendations
+            if "vram_min" in rec and profile.gpu_vram_gb >= rec["vram_min"]:
                 return rec["model"]
     
     # Fallback to RAM-based recommendations (CPU)
     for rec in MODEL_RECOMMENDATIONS:
-        if "ram_min" in rec and profile.ram_gb > rec["ram_min"]:
+        # Fix: Use >= so exact minimum RAM specs (e.g., 8.0 GB) match recommendations
+        if "ram_min" in rec and profile.ram_gb >= rec["ram_min"]:
             return rec["model"]
             
     return DEFAULT_MODEL

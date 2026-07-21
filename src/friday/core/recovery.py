@@ -67,7 +67,8 @@ class RecoveryManager:
         # 2. Browser Daemon Offline Recovery
         async def recover_browser_daemon(error: Exception, ctx: Dict[str, Any]) -> bool:
             self.console.print("[bold yellow]Heal:[/bold yellow] Browser automation daemon is offline.")
-            self.console.print("Try running: [cyan]cd src/friday/skills/browser_daemon && go run main.go[/cyan]")
+            self.console.print("Try running: [cyan]cd src/friday/skills/browser_daemon && ./friday-browser-daemon[/cyan]")
+            self.console.print("Or for development: [cyan]go run main.go[/cyan]")
             return False # Manual fix required for now
 
         self.register_strategy(RecoveryStrategy(

@@ -116,7 +116,7 @@ Respond ONLY with JSON: {{"agent": "category_name"}}
              messages.append(Message(role="user", content=f"Query: {query}"))
         
         try:
-            llm = await self._get_llm("general_chat")
+            llm = await self._get_llm("intent_detection")
             # Limit response length for classification (num_predict is Ollama-specific, max_tokens for OpenAI)
             options = {"num_predict": 20, "max_tokens": 20, "temperature": 0.0}
             response = await llm.chat(messages, options=options)
@@ -130,11 +130,24 @@ Respond ONLY with JSON: {{"agent": "category_name"}}
     def _detect_fast_path_intent(self, query: str) -> Optional[str]:
         """Detect intent using simple regex patterns to avoid LLM calls."""
         import re
-        greetings_regex = r"^(?:hi+|hello+|hey+|greetings|good (?:morning|evening)|morning|evening)(?:\s+friday)?[!.?]*$"
-        identity_regex = r"^(?:who (?:are|r) (?:you|u)|what(?:'s| is) your name|your name)[?.!]*$"
+        query_lower = query.lower().strip()
         
-        if re.search(greetings_regex, query, re.IGNORECASE) or re.search(identity_regex, query, re.IGNORECASE):
+        # 1. Greetings and Identity
+        greetings_regex = r"^(?:hi+|hello+|hey+|greetings|good (?:morning|evening)|morning|evening)(?:\s+friday)?[!.?]*$"
+        identity_regex = r"^(?:who (?:are|r) (?:you|u)|what(?:'s| is) your name|your name|what are you)[?.!]*$"
+        
+        if re.search(greetings_regex, query_lower) or re.search(identity_regex, query_lower):
             return "general_chat"
+            
+        # 2. Simple conversational filler
+        filler_regex = r"^(?:ok|okay|thanks|thank you|cool|nice|wow|interesting|yes|no|maybe)[!.?]*$"
+        if re.search(filler_regex, query_lower):
+            return "general_chat"
+
+        # 3. Simple shell commands (obvious ones)
+        if query_lower in {"ls", "pwd", "whoami", "date", "uptime"}:
+            return "system_command"
+
         return None
 
     def _parse_json(self, text: str) -> Dict[str, Any]:

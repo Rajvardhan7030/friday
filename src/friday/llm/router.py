@@ -47,7 +47,7 @@ class ModelRouter:
                 embedding_model=self.config.get("llm.embedding_model")
             )
             
-            # Specialized route for summarization to avoid heavy model usage
+            # Specialized route for summarization and intent detection to avoid heavy model usage
             summ_primary = self.config.get("llm.summarization_model")
             if summ_primary and summ_primary != primary:
                 summ_route = ModelRoute(
@@ -58,7 +58,8 @@ class ModelRouter:
                 )
                 return ModelPolicy(routes={
                     "default": default_route,
-                    "summarization": summ_route
+                    "summarization": summ_route,
+                    "intent_detection": summ_route
                 })
             
             return ModelPolicy(routes={"default": default_route})

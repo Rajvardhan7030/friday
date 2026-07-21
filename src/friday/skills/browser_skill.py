@@ -7,6 +7,7 @@ from pydantic import Field, BaseModel
 
 from .base import BaseSkill, SkillResult
 from ..core.mcp import MCPToolSchema
+from ..core.exceptions import BrowserDaemonUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,17 @@ class BrowserSkill(BaseSkill):
 
     def __init__(self, daemon_url: str = "http://localhost:9000"):
         self.daemon_url = daemon_url
+
+    async def is_daemon_alive(self) -> bool:
+        """Check if the browser daemon is reachable."""
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.get(f"{self.daemon_url}/health")
+                # The daemon process is running if it responds to HTTP requests,
+                # even if it returns 503 (e.g. missing browser).
+                return True
+        except Exception:
+            return False
 
     @property
     def name(self) -> str:
@@ -72,6 +84,8 @@ class BrowserSkill(BaseSkill):
                         }
                     )
                 return SkillResult(success=False, data=None, message=data.get("message"))
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            raise BrowserDaemonUnavailable(f"Browser daemon at {self.daemon_url} is unreachable: {e}")
         except Exception as e:
             logger.error(f"Browser navigation failed: {e}")
             return SkillResult(success=False, data=None, message=str(e))
@@ -90,6 +104,8 @@ class BrowserSkill(BaseSkill):
                 if data.get("success"):
                     return SkillResult(success=True, data=data.get("content") or "Action performed successfully")
                 return SkillResult(success=False, data=None, message=data.get("message"))
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+             raise BrowserDaemonUnavailable(f"Browser daemon at {self.daemon_url} is unreachable: {e}")
         except Exception as e:
             logger.error(f"Browser action failed: {e}")
             return SkillResult(success=False, data=None, message=str(e))
@@ -104,6 +120,8 @@ class BrowserSkill(BaseSkill):
                 if data.get("success"):
                     return SkillResult(success=True, data=data.get("pages"))
                 return SkillResult(success=False, message=data.get("message"))
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            raise BrowserDaemonUnavailable(f"Browser daemon at {self.daemon_url} is unreachable: {e}")
         except Exception as e:
             return SkillResult(success=False, message=str(e))
 
@@ -115,6 +133,8 @@ class BrowserSkill(BaseSkill):
                 resp.raise_for_status()
                 data = resp.json()
                 return SkillResult(success=data.get("success"), message=data.get("message"))
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            raise BrowserDaemonUnavailable(f"Browser daemon at {self.daemon_url} is unreachable: {e}")
         except Exception as e:
             return SkillResult(success=False, message=str(e))
 

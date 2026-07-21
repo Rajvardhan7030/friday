@@ -36,7 +36,13 @@ ALLOWED_IMPORTS = {
 
 FORBIDDEN_ATTRIBUTES = {
     '__globals__', '__subclasses__', '__builtins__', '__code__', 
-    '__func__', '__self__', '__dict__', '__class__', '__mro__'
+    '__func__', '__self__', '__dict__', '__class__', '__mro__',
+    '__getattribute__', '__getattr__', '__setattr__', '__delattr__'
+}
+
+FORBIDDEN_BUILTINS = {
+    'eval', 'exec', 'open', 'compile', 'input', 'globals', 'locals', 
+    '__import__', 'getattr', 'setattr', 'delattr', 'hasattr', 'breakpoint'
 }
 
 FORBIDDEN_PATTERNS = [
@@ -44,7 +50,7 @@ FORBIDDEN_PATTERNS = [
     'os.removedirs', 'os.mkdir', 'os.makedirs', 'os.chmod', 'os.chown', 'os.lchown', 
     'os.symlink', 'os.link', 'os.chdir', 'os.fchdir', 'os.chroot',
     'subprocess.', 'socket.', 'requests.', 'urllib.', 'shutil.rmtree', 'shutil.copy', 
-    'shutil.move', 'eval', 'exec', 'open',
+    'shutil.move',
     'read_text', 'read_bytes', 'write_text', 'write_bytes', 'unlink', 'rmdir', 
     'rename', 'replace', 'chmod', 'lchmod', 'symlink_to', 'hardlink_to', 'mkdir'
 ]
@@ -82,17 +88,23 @@ def validate_python_code(code: str) -> Tuple[bool, str]:
                 if node.attr in FORBIDDEN_ATTRIBUTES:
                     return False, f"Forbidden attribute access: {node.attr}"
             
-            # 3. Check calls for forbidden patterns
+            # 3. Check names (prevents aliasing like e = eval)
+            if isinstance(node, ast.Name):
+                if node.id in FORBIDDEN_BUILTINS or node.id == "__builtins__":
+                    return False, f"Forbidden name: {node.id}"
+
+            # 4. Check Subscript access (prevents __builtins__['eval'])
+            if isinstance(node, ast.Subscript):
+                if isinstance(node.value, ast.Name) and node.value.id == "__builtins__":
+                    return False, "Forbidden access to __builtins__ via subscript."
+
+            # 5. Check calls for forbidden patterns
             if isinstance(node, ast.Call):
                 func_name = _get_func_name(node.func)
                 if func_name:
                     for pattern in FORBIDDEN_PATTERNS:
                         if pattern in func_name:
                             return False, f"Forbidden function call: {func_name}"
-                
-                # Check for dynamic attribute access via getattr/setattr
-                if isinstance(node.func, ast.Name) and node.func.id in ('getattr', 'setattr', 'delattr', 'hasattr'):
-                    return False, f"Forbidden built-in call: {node.func.id}"
 
         return True, "Syntax and safety check passed."
     except SyntaxError as e:
@@ -100,15 +112,58 @@ def validate_python_code(code: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Validation Error: {str(e)}"
 
+ALLOWED_BINARIES = {
+    "ls", "pwd", "date", "whoami", "uname", "hostname", "df", "du", "free", 
+    "uptime", "mkdir", "touch", "cat", "grep", "head", "tail", "echo", "find",
+    "ps", "history", "type", "which", "cp", "mv", "rm", "sleep"
+}
+
+def _has_unquoted_char(s: str, chars: set[str]) -> bool:
+    """Helper to detect if any of the target characters exist outside of quotes."""
+    in_single = False
+    in_double = False
+    escaped = False
+    for char in s:
+        if escaped:
+            escaped = False
+            continue
+        if char == '\\':
+            escaped = True
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if not in_single and not in_double and char in chars:
+            return True
+    return False
+
 def validate_shell_command(command: str, config: Optional[Config] = None) -> Tuple[bool, str]:
     """
-    Checks if a shell command is safe to execute based on blocklists and config.
+    Checks if a shell command is safe to execute based on allowlists, blocklists and structure.
     """
-    # 0. Check for command substitution and process substitution
-    if "$(" in command or "`" in command:
-        return False, "Command substitution ($() or ``) is prohibited for security reasons."
-    if "<(" in command or ">(" in command:
-        return False, "Process substitution (<() or >()) is prohibited for security reasons."
+    if not command.strip():
+        return False, "Empty command"
+
+    # 0. Check for forbidden characters that enable chaining or substitution
+    if "\n" in command or "\r" in command:
+        return False, "Newlines are prohibited in shell commands."
+    
+    # Check for command/process substitution and environment variable expansion
+    if any(x in command for x in ["$(", "`", "${"]):
+        return False, "Command/process substitution or environment variable expansion ($(), ``, ${}) is prohibited."
+    
+    if "$" in command:
+        return False, "Environment variable expansion ($) is prohibited."
+
+    # Check for unquoted redirection operators or subshells
+    if _has_unquoted_char(command, {">", "<"}):
+        return False, "Redirection operators (> or <) are prohibited outside of quotes."
+
+    if _has_unquoted_char(command, {"(", ")"}):
+        return False, "Subshells or parentheses are prohibited outside of quotes." 
 
     # 1. Basic Sudo check
     cmd_lower = command.lower()
@@ -116,61 +171,80 @@ def validate_shell_command(command: str, config: Optional[Config] = None) -> Tup
     if "sudo" in cmd_lower and not allow_sudo:
         return False, "Sudo commands are disabled in configuration."
 
-    # 2. Split and validate sub-commands (prevents bypasses like 'ls; rm -rf /')
-    # We split by common shell separators: ;, &&, ||, |
-    parts = re.split(r';|&&|\|\||\|', command)
+    import shlex
+    try:
+        tokens = shlex.split(command)
+    except ValueError as e:
+        return False, f"Invalid shell syntax: {str(e)}"
+
+    if not tokens:
+        return False, "Empty command"
+
+    # 2. Structural Validation and Binary Allowlist
+    # A command starts at the beginning or after a separator
+    separators = {";", "&&", "||", "|"}
+    expect_binary = True
+    in_sudo_prefix = False
+    skip_next_option_arg = False
+    sudo_opts_with_arg = {"-u", "-g", "-C", "-h", "-p", "-r", "-t", "-U"}
     
-    for part in parts:
-        part = part.strip().lower()
-        if not part: continue
-        
-        # Check against hardcoded blocklist
-        for pattern in SHELL_BLOCKLIST:
-            if pattern in part:
-                return False, f"Dangerous command pattern detected: {pattern}"
+    for i, token in enumerate(tokens):
+        if expect_binary:
+            if token == "sudo" and allow_sudo:
+                in_sudo_prefix = True
+                continue
+            
+            if in_sudo_prefix:
+                if skip_next_option_arg:
+                    skip_next_option_arg = False
+                    continue
+                if token in sudo_opts_with_arg:
+                    skip_next_option_arg = True
+                    continue
+                if token.startswith("-"):
+                    continue
+            
+            # Identify the binary token
+            binary = token.split('/')[-1]
+            if binary not in ALLOWED_BINARIES:
+                return False, f"Forbidden or unknown binary detected: {binary}. Only {sorted(list(ALLOWED_BINARIES))} are allowed."
+            
+            expect_binary = False
+            in_sudo_prefix = False
+            skip_next_option_arg = False
+            continue
 
-        # 2.5 Forbidden Binaries Check
-        forbidden_binaries = {"sh", "bash", "zsh", "ksh", "dash", "nc", "netcat", "curl", "wget", "python", "python3", "perl", "ruby", "lua"}
+        if token in separators:
+            expect_binary = True
+            in_sudo_prefix = False
+            skip_next_option_arg = False
+            continue
         
-        import shlex
-        try:
-            # shlex.split helps correctly identify tokens even with quotes
-            tokens = shlex.split(part)
-            for token in tokens:
-                # Get the binary name (handle paths like /usr/bin/sh)
-                binary = token.split('/')[-1]
-                if binary in forbidden_binaries:
-                    return False, f"Forbidden binary detected: {binary}"
-        except ValueError:
-            # shlex might fail on unbalanced quotes, fallback to simple split
-            words = part.split()
-            for word in words:
-                binary = word.split('/')[-1]
-                if binary in forbidden_binaries:
-                    return False, f"Forbidden binary detected: {binary}"
+        # Check for forbidden redirection targets or patterns in arguments
+        # (Though most of this is caught by system directory protection below)
+        pass
 
-        # 3. Configurable Blocklist
-        if config:
-            extra_blocked = config.get("security.shell_command_blocked_patterns", [])
-            for pattern in extra_blocked:
-                if pattern in part:
-                    return False, f"User-configured blocked pattern detected: {pattern}"
+    # 3. Blocklist and System Directory Protection (Legacy but good as extra layer)
+    # We re-verify the full command against some hardcoded dangerous patterns
+    for pattern in SHELL_BLOCKLIST:
+        if pattern in command:
+            return False, f"Dangerous command pattern detected: {pattern}"
 
-        # 4. System Directory Protection
-        for sdir in SYSTEM_DIRS:
-            if sdir in part:
-                # Modification check
-                if any(x in part for x in ["rm", "mv", "cp", "touch", ">", ">>", "tee", "chmod", "chown"]):
-                    return False, f"Modification of system directory {sdir} is prohibited."
-                # Sensitive access check
-                if sdir == "/etc" and any(x in part for x in ["shadow", "sudoers", "passwd", "group", "gshadow"]):
-                    if any(x in part for x in ["cat", "less", "more", "head", "tail", "nano", "vim", "vi", "grep"]):
-                        return False, f"Access to sensitive file in {sdir} is prohibited."
-        
-        # 5. Dangerous 'rm' targets
-        if "rm " in part and ("-r" in part or "-f" in part):
-            if any(x in part for x in [" /", " .", " ..", " *", " ~"]):
-                 return False, f"Dangerous 'rm' target detected."
+    # 4. System Directory Protection
+    for sdir in SYSTEM_DIRS:
+        if sdir in command:
+            # Modification check
+            if any(x in command for x in ["rm", "mv", "cp", "touch", ">", ">>", "tee", "chmod", "chown"]):
+                return False, f"Modification of system directory {sdir} is prohibited."
+            # Sensitive access check
+            if sdir == "/etc" and any(x in command for x in ["shadow", "sudoers", "passwd", "group", "gshadow"]):
+                if any(x in command for x in ["cat", "less", "more", "head", "tail", "nano", "vim", "vi", "grep"]):
+                    return False, f"Access to sensitive file in {sdir} is prohibited."
+
+    # 5. Dangerous 'rm' targets
+    if "rm " in command and ("-r" in command or "-f" in command):
+        if any(x in command for x in [" /", " .", " ..", " *", " ~"]):
+             return False, f"Dangerous 'rm' target detected."
 
     return True, "Command validated."
 
@@ -314,7 +388,12 @@ async def run_sandboxed_code(
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
             success = process.returncode == 0
             
-            output_bytes = stdout if success else stderr
+            # Fix: Combine stdout and stderr on failure so preceding stdout output is not lost
+            if success:
+                output_bytes = stdout
+            else:
+                output_bytes = stdout + b"\n" + stderr if stdout else stderr
+                
             output = output_bytes.decode('utf-8', errors='replace')
                 
             return success, output

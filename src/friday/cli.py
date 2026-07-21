@@ -30,9 +30,9 @@ class FridayCLI:
         self.config = Config()
         setup_logging(Path(self.config.get("logging.file")))
         
-        self.runner = AgentRunner(self.config)
         self.tts = TTSEngine(self.config)
         self.stt = STTEngine(self.config)
+        self.runner = AgentRunner(self.config, tts=self.tts)
         self.voice_mode = False
         self.voice_output_enabled = voice_output_enabled
 
@@ -443,11 +443,13 @@ async def friday_doctor():
         import httpx
         daemon_url = config.get("skills.browser.daemon_url", "http://localhost:9000")
         try:
-            resp = httpx.get(f"{daemon_url}/health", timeout=2.0)
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{daemon_url}/health", timeout=2.0)
             if resp.status_code == 200:
                 console.print(f"• Browser Daemon: [green]ONLINE[/green] ({daemon_url})")
             else:
-                console.print(f"• Browser Daemon: [yellow]ERROR[/yellow] (Status: {resp.status_code})")
+                error_msg = resp.text.strip() if resp.text else f"Status: {resp.status_code}"
+                console.print(f"• Browser Daemon: [yellow]ERROR[/yellow] ({error_msg})")
         except Exception:
             console.print(f"• Browser Daemon: [bold red]OFFLINE[/bold red] (Is friday-browser-daemon running?)")
     except ImportError:

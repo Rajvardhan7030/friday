@@ -79,7 +79,9 @@ def scan_hardware() -> DetailedHardwareProfile:
                         timeout=5.0
                     )
                     if res_v.stdout:
-                        gpu_vram_gb = float(res_v.stdout.strip()) / 1024
+                        # Fix: Take the first line of output in case multi-GPU returns multiple lines
+                        first_line = res_v.stdout.strip().split("\n")[0]
+                        gpu_vram_gb = float(first_line.strip()) / 1024
         except Exception as e:
             logger.debug(f"NVIDIA fallback detection failed: {e}")
 
